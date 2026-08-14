@@ -5,7 +5,8 @@
 //   - CAP_SYS_ADMIN in the bounding/effective/permitted sets,
 //   - a mount target directory (a small tmpfs at the mount path, so the
 //     directory reliably exists for geesefsd to mount over), and
-//   - a createRuntime hook that runs geesefs-hook.
+//   - a createRuntime hook (to establish the mount) and a matching poststop
+//     hook (to reap it), both running geesefs-hook.
 //
 // The transformation is pure and idempotent: applying it to an already-injected
 // spec adds nothing and yields an equivalent document. It operates on the spec
@@ -21,6 +22,7 @@ import (
 
 	"github.com/randomizedcoder/fuse-filesystem-inject/internal/contract"
 	"github.com/randomizedcoder/fuse-filesystem-inject/internal/policy"
+	"github.com/randomizedcoder/fuse-filesystem-inject/internal/protocol"
 )
 
 // capSysAdmin is the single capability FUSE mounting requires. We never grant
@@ -51,7 +53,8 @@ func Mutate(specJSON []byte, pol policy.Policy, hookPath string) ([]byte, error)
 	addDeviceCgroupRule(root)
 	addCapability(root, capSysAdmin)
 	addMountTarget(root, pol.Mount)
-	addCreateRuntimeHook(root, hookPath, pol)
+	addHook(root, "createRuntime", hookPath, mountHookArgs(pol))
+	addHook(root, "poststop", hookPath, unmountHookArgs())
 
 	out, err := json.MarshalIndent(root, "", "\t")
 	if err != nil {
@@ -130,24 +133,36 @@ func addMountTarget(root map[string]any, mount string) {
 	})
 }
 
-// addCreateRuntimeHook registers geesefs-hook as a createRuntime hook. The hook
-// runs in the host/runtime namespace after the container namespaces exist —
-// the correct place for geesefsd's host-side setns() mount. The policy travels
-// as positional hook args (argv[0] selects the role); the container id and pid
-// arrive on the hook's stdin as OCI State.
-func addCreateRuntimeHook(root map[string]any, hookPath string, pol policy.Policy) {
+// mountHookArgs is the argv for the createRuntime hook: the role (argv[0], which
+// the wrapper also fixes), the "mount" operation, and the policy positionally.
+// The container id and pid arrive on the hook's stdin as OCI State.
+func mountHookArgs(pol policy.Policy) []any {
+	return []any{contract.RoleHook, string(protocol.OpMount), pol.Bucket, pol.Mount, pol.Endpoint}
+}
+
+// unmountHookArgs is the argv for the poststop hook: just the "unmount"
+// operation. The container id it cleans up arrives on stdin as OCI State.
+func unmountHookArgs() []any {
+	return []any{contract.RoleHook, string(protocol.OpUnmount)}
+}
+
+// addHook registers geesefs-hook under the named OCI hook (createRuntime for the
+// mount, poststop for the unmount), both of which run in the host/runtime
+// namespace — the correct place for geesefsd's host-side setns() work. It is
+// idempotent per (hook, args): re-application adds nothing.
+func addHook(root map[string]any, name, hookPath string, args []any) {
 	hooks := childObject(root, "hooks")
-	createRuntime, _ := hooks["createRuntime"].([]any)
-	for _, h := range createRuntime {
+	existing, _ := hooks[name].([]any)
+	for _, h := range existing {
 		if hm, ok := h.(map[string]any); ok {
 			if p, _ := hm["path"].(string); p == hookPath {
 				return
 			}
 		}
 	}
-	hooks["createRuntime"] = append(createRuntime, map[string]any{
+	hooks[name] = append(existing, map[string]any{
 		"path": hookPath,
-		"args": []any{contract.RoleHook, pol.Bucket, pol.Mount, pol.Endpoint},
+		"args": args,
 	})
 }
 

@@ -18,7 +18,8 @@ narrowly-scoped changes to the OCI spec and then execs the real `runc`.
                       - device /dev/fuse (+ device-cgroup rule)
                       - capability CAP_SYS_ADMIN (minimum for FUSE mount)
                       - the mount target directory in the rootfs
-                      - a createRuntime hook -> geesefs-hook -> geesefsd
+                      - a createRuntime hook -> geesefs-hook mount   -> geesefsd
+                      - a poststop     hook -> geesefs-hook unmount -> geesefsd
 6. Write the modified spec and exec real runc with the original args.
 ```
 

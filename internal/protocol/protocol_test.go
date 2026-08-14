@@ -9,11 +9,12 @@ import (
 func TestRequestRoundTrip(t *testing.T) {
 	tests := []struct {
 		name string
-		req  MountRequest
+		req  Request
 	}{
-		{"typical", MountRequest{ID: "abc123", PID: 4242, Bucket: "models", Mount: "/models", Endpoint: "http://127.0.0.1:9000"}},
-		{"zero", MountRequest{}},
-		{"unicode-and-spaces", MountRequest{ID: "id with spaces", PID: 1, Bucket: "b", Mount: "/mnt/data", Endpoint: "https://s3.example"}},
+		{"mount", Request{Op: OpMount, ID: "abc123", PID: 4242, Bucket: "models", Mount: "/models", Endpoint: "http://127.0.0.1:9000"}},
+		{"unmount", Request{Op: OpUnmount, ID: "abc123"}},
+		{"zero", Request{}},
+		{"unicode-and-spaces", Request{Op: OpMount, ID: "id with spaces", PID: 1, Bucket: "b", Mount: "/mnt/data", Endpoint: "https://s3.example"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -38,9 +39,9 @@ func TestRequestRoundTrip(t *testing.T) {
 func TestResponseRoundTrip(t *testing.T) {
 	tests := []struct {
 		name string
-		resp MountResponse
+		resp Response
 	}{
-		{"ready", MountResponse{Status: StatusReady}},
+		{"ready", Response{Status: StatusReady}},
 		{"failed", Failed(errString("mount timed out"))},
 	}
 	for _, tt := range tests {
@@ -81,13 +82,17 @@ func TestReadEmptyIsError(t *testing.T) {
 func TestRequestValidate(t *testing.T) {
 	tests := []struct {
 		name    string
-		req     MountRequest
+		req     Request
 		wantErr bool
 	}{
-		{"ok", MountRequest{ID: "x", PID: 1}, false},
-		{"empty id", MountRequest{ID: "", PID: 1}, true},
-		{"zero pid", MountRequest{ID: "x", PID: 0}, true},
-		{"negative pid", MountRequest{ID: "x", PID: -3}, true},
+		{"mount ok", Request{Op: OpMount, ID: "x", PID: 1}, false},
+		{"unmount ok (no pid needed)", Request{Op: OpUnmount, ID: "x"}, false},
+		{"unknown op", Request{Op: "wat", ID: "x", PID: 1}, true},
+		{"empty op", Request{ID: "x", PID: 1}, true},
+		{"mount empty id", Request{Op: OpMount, ID: "", PID: 1}, true},
+		{"unmount empty id", Request{Op: OpUnmount, ID: ""}, true},
+		{"mount zero pid", Request{Op: OpMount, ID: "x", PID: 0}, true},
+		{"mount negative pid", Request{Op: OpMount, ID: "x", PID: -3}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

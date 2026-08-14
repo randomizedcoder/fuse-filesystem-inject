@@ -142,7 +142,7 @@ func handleCreate(bundle string) (exitCode int, abort bool) {
 
 	logf("GeeSFS injection applied to %s (bucket=%s mount=%s endpoint=%s)",
 		configPath, pol.Bucket, pol.Mount, pol.Endpoint)
-	logf("  added: %s device + cgroup rule c %d:%d rwm, CAP_SYS_ADMIN, mount target %s, createRuntime hook",
+	logf("  added: %s device + cgroup rule c %d:%d rwm, CAP_SYS_ADMIN, mount target %s, createRuntime + poststop hooks",
 		contract.FuseDevicePath, contract.FuseDeviceMajor, contract.FuseDeviceMinor, pol.Mount)
 	return 0, false
 }

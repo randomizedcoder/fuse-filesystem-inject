@@ -10,7 +10,7 @@ import (
 )
 
 func TestGeesefsArgs(t *testing.T) {
-	req := protocol.MountRequest{PID: 4242, Bucket: "models", Mount: "/models", Endpoint: "http://127.0.0.1:9000"}
+	req := protocol.Request{PID: 4242, Bucket: "models", Mount: "/models", Endpoint: "http://127.0.0.1:9000"}
 	got := geesefsArgs(req)
 	want := []string{
 		"-t", "4242", "-m", "--",
@@ -25,7 +25,7 @@ func TestGeesefsArgsEntersMountNsOnly(t *testing.T) {
 	// Regression guard for the security-relevant invariant: enter the mount
 	// namespace (-m) but NOT the network namespace, so the host S3 endpoint
 	// stays reachable.
-	got := geesefsArgs(protocol.MountRequest{PID: 1, Bucket: "b", Mount: "/m", Endpoint: "http://x"})
+	got := geesefsArgs(protocol.Request{PID: 1, Bucket: "b", Mount: "/m", Endpoint: "http://x"})
 	var hasM, hasN bool
 	for _, a := range got {
 		switch a {
@@ -83,8 +83,8 @@ func TestRegistry(t *testing.T) {
 		t.Error("remove on empty registry should report not found")
 	}
 
-	a := &mountState{req: protocol.MountRequest{ID: "a", PID: 1}}
-	b := &mountState{req: protocol.MountRequest{ID: "b", PID: 2}}
+	a := &mountState{req: protocol.Request{ID: "a", PID: 1}}
+	b := &mountState{req: protocol.Request{ID: "b", PID: 2}}
 	r.add(a)
 	r.add(b)
 
@@ -96,7 +96,7 @@ func TestRegistry(t *testing.T) {
 	}
 
 	// re-add under the same id replaces (idempotent keying)
-	a2 := &mountState{req: protocol.MountRequest{ID: "a", PID: 3}}
+	a2 := &mountState{req: protocol.Request{ID: "a", PID: 3}}
 	r.add(a2)
 	if got, _ := r.get("a"); got.req.PID != 3 {
 		t.Errorf("re-add should replace entry; got pid %d, want 3", got.req.PID)
@@ -114,25 +114,35 @@ func TestRegistry(t *testing.T) {
 	}
 }
 
-// fakeMounter records the requests it is asked to mount and can be told to fail,
-// so serve() can be tested without setns/geesefs.
+// fakeMounter records the requests it is asked to mount/unmount and can be told
+// to fail, so serve() can be tested without setns/geesefs.
 type fakeMounter struct {
-	calls   []protocol.MountRequest
-	failErr error
+	mounts   []protocol.Request
+	unmounts []string
+	failErr  error
 }
 
-func (f *fakeMounter) Mount(req protocol.MountRequest) (*os.Process, error) {
-	f.calls = append(f.calls, req)
+func (f *fakeMounter) Mount(req protocol.Request) (*os.Process, error) {
+	f.mounts = append(f.mounts, req)
 	if f.failErr != nil {
 		return nil, f.failErr
 	}
 	return nil, nil
 }
 
+func (f *fakeMounter) Unmount(st *mountState) error {
+	f.unmounts = append(f.unmounts, st.req.ID)
+	return f.failErr
+}
+
 func newTestServer(m mounter) *server { return &server{reg: newRegistry(), mounter: m} }
 
-func validReq() protocol.MountRequest {
-	return protocol.MountRequest{ID: "c1", PID: 100, Bucket: "models", Mount: "/models", Endpoint: "http://127.0.0.1:9000"}
+func validReq() protocol.Request {
+	return protocol.Request{Op: protocol.OpMount, ID: "c1", PID: 100, Bucket: "models", Mount: "/models", Endpoint: "http://127.0.0.1:9000"}
+}
+
+func unmountReq(id string) protocol.Request {
+	return protocol.Request{Op: protocol.OpUnmount, ID: id}
 }
 
 func TestServe(t *testing.T) {
@@ -143,8 +153,8 @@ func TestServe(t *testing.T) {
 		if resp.Status != protocol.StatusReady {
 			t.Fatalf("status = %v (%s), want READY", resp.Status, resp.Error)
 		}
-		if len(fm.calls) != 1 {
-			t.Fatalf("expected exactly one mount call, got %d", len(fm.calls))
+		if len(fm.mounts) != 1 {
+			t.Fatalf("expected exactly one mount call, got %d", len(fm.mounts))
 		}
 		if _, ok := s.reg.get("c1"); !ok {
 			t.Error("expected c1 recorded in registry")
@@ -159,8 +169,8 @@ func TestServe(t *testing.T) {
 		if resp.Status != protocol.StatusReady {
 			t.Fatalf("status = %v, want READY", resp.Status)
 		}
-		if len(fm.calls) != 1 {
-			t.Errorf("expected mount called once, got %d", len(fm.calls))
+		if len(fm.mounts) != 1 {
+			t.Errorf("expected mount called once, got %d", len(fm.mounts))
 		}
 	})
 
@@ -185,7 +195,7 @@ func TestServe(t *testing.T) {
 		if resp.Status != protocol.StatusFailed {
 			t.Fatalf("status = %v, want FAILED", resp.Status)
 		}
-		if len(fm.calls) != 0 {
+		if len(fm.mounts) != 0 {
 			t.Error("must not attempt a mount for an invalid request")
 		}
 	})
@@ -199,8 +209,59 @@ func TestServe(t *testing.T) {
 		if resp.Status != protocol.StatusFailed {
 			t.Fatalf("status = %v, want FAILED", resp.Status)
 		}
-		if len(fm.calls) != 0 {
+		if len(fm.mounts) != 0 {
 			t.Error("must not attempt a mount for an invalid policy")
+		}
+	})
+
+	t.Run("unmount reaps and drops state", func(t *testing.T) {
+		fm := &fakeMounter{}
+		s := newTestServer(fm)
+		s.serve(validReq())
+
+		resp := s.serve(unmountReq("c1"))
+		if resp.Status != protocol.StatusReady {
+			t.Fatalf("status = %v (%s), want READY", resp.Status, resp.Error)
+		}
+		if len(fm.unmounts) != 1 || fm.unmounts[0] != "c1" {
+			t.Errorf("expected one unmount of c1, got %v", fm.unmounts)
+		}
+		if _, ok := s.reg.get("c1"); ok {
+			t.Error("state must be dropped after unmount")
+		}
+	})
+
+	t.Run("unmount of unknown container is idempotent success", func(t *testing.T) {
+		fm := &fakeMounter{}
+		s := newTestServer(fm)
+		resp := s.serve(unmountReq("never-mounted"))
+		if resp.Status != protocol.StatusReady {
+			t.Fatalf("status = %v, want READY", resp.Status)
+		}
+		if len(fm.unmounts) != 0 {
+			t.Error("must not reap anything for an unknown container")
+		}
+	})
+
+	t.Run("unmount touches only its own container (isolation)", func(t *testing.T) {
+		fm := &fakeMounter{}
+		s := newTestServer(fm)
+		c1 := validReq()
+		c2 := validReq()
+		c2.ID, c2.PID = "c2", 200
+		s.serve(c1)
+		s.serve(c2)
+
+		s.serve(unmountReq("c1"))
+
+		if _, ok := s.reg.get("c1"); ok {
+			t.Error("c1 should be gone")
+		}
+		if _, ok := s.reg.get("c2"); !ok {
+			t.Error("c2 must be untouched by c1's unmount")
+		}
+		if len(fm.unmounts) != 1 || fm.unmounts[0] != "c1" {
+			t.Errorf("expected only c1 reaped, got %v", fm.unmounts)
 		}
 	})
 }

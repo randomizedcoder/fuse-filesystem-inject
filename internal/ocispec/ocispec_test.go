@@ -56,25 +56,13 @@ func TestMutate_AddsAllFields(t *testing.T) {
 		t.Errorf("mounts missing destination /models: %v", m["mounts"])
 	}
 
-	// createRuntime hook registered with our path + policy args.
-	hooks := dig(t, m, "hooks", "createRuntime").([]any)
-	if len(hooks) != 1 {
-		t.Fatalf("createRuntime has %d hooks, want 1", len(hooks))
-	}
-	h := hooks[0].(map[string]any)
-	if h["path"] != hookPath {
-		t.Errorf("hook path = %v, want %v", h["path"], hookPath)
-	}
-	args := h["args"].([]any)
-	wantArgs := []any{"geesefs-hook", "models", "/models", "http://127.0.0.1:9000"}
-	if len(args) != len(wantArgs) {
-		t.Fatalf("hook args = %v, want %v", args, wantArgs)
-	}
-	for i := range wantArgs {
-		if args[i] != wantArgs[i] {
-			t.Errorf("hook args[%d] = %v, want %v", i, args[i], wantArgs[i])
-		}
-	}
+	// createRuntime hook registered with our path + "mount" + policy args.
+	checkHook(t, m, "createRuntime",
+		[]any{"geesefs-hook", "mount", "models", "/models", "http://127.0.0.1:9000"})
+
+	// poststop hook registered with our path + "unmount".
+	checkHook(t, m, "poststop",
+		[]any{"geesefs-hook", "unmount"})
 
 	// ociVersion is preserved.
 	if m["ociVersion"] != "1.0.2" {
@@ -119,7 +107,8 @@ func TestMutate_NoDuplicates(t *testing.T) {
 	  "linux":{"devices":[{"type":"c","path":"/dev/fuse","major":10,"minor":229}],
 	           "resources":{"devices":[{"allow":true,"type":"c","major":10,"minor":229,"access":"rwm"}]}},
 	  "mounts":[{"destination":"/models","type":"tmpfs","source":"tmpfs"}],
-	  "hooks":{"createRuntime":[{"path":"` + hookPath + `","args":["geesefs-hook","models","/models","http://127.0.0.1:9000"]}]}
+	  "hooks":{"createRuntime":[{"path":"` + hookPath + `","args":["geesefs-hook","mount","models","/models","http://127.0.0.1:9000"]}],
+	           "poststop":[{"path":"` + hookPath + `","args":["geesefs-hook","unmount"]}]}
 	}`
 	m := mutate(t, spec)
 
@@ -131,6 +120,9 @@ func TestMutate_NoDuplicates(t *testing.T) {
 	}
 	if n := len(dig(t, m, "hooks", "createRuntime").([]any)); n != 1 {
 		t.Errorf("createRuntime hook count = %d, want 1", n)
+	}
+	if n := len(dig(t, m, "hooks", "poststop").([]any)); n != 1 {
+		t.Errorf("poststop hook count = %d, want 1", n)
 	}
 	if n := countMountDest(m["mounts"].([]any), "/models"); n != 1 {
 		t.Errorf("/models mount count = %d, want 1", n)
@@ -170,6 +162,29 @@ func dig(t *testing.T, m map[string]any, keys ...string) any {
 		}
 	}
 	return cur
+}
+
+// checkHook asserts the named OCI hook list holds exactly our single hook entry
+// with the given argv.
+func checkHook(t *testing.T, m map[string]any, name string, wantArgs []any) {
+	t.Helper()
+	hooks := dig(t, m, "hooks", name).([]any)
+	if len(hooks) != 1 {
+		t.Fatalf("%s has %d hooks, want 1", name, len(hooks))
+	}
+	h := hooks[0].(map[string]any)
+	if h["path"] != hookPath {
+		t.Errorf("%s hook path = %v, want %v", name, h["path"], hookPath)
+	}
+	args := h["args"].([]any)
+	if len(args) != len(wantArgs) {
+		t.Fatalf("%s hook args = %v, want %v", name, args, wantArgs)
+	}
+	for i := range wantArgs {
+		if args[i] != wantArgs[i] {
+			t.Errorf("%s hook args[%d] = %v, want %v", name, i, args[i], wantArgs[i])
+		}
+	}
 }
 
 func hasDeviceWithPath(devices []any, path string) bool {

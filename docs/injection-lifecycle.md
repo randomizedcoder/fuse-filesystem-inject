@@ -63,7 +63,15 @@ bounded so the runtime never waits indefinitely on an unreachable endpoint.
 
 ## Cleanup
 
-On container exit, `geesefsd` terminates GeeSFS, unmounts, releases namespace
-handles, and removes temporary state — keyed by container id. The integration
-test asserts no mount is left on the host afterward. See
+`geesefs-runc` also registers a **`poststop`** hook — the symmetric counterpart
+to `createRuntime`, running in the host/runtime namespace after the container
+process has exited. It invokes `geesefs-hook unmount`, which sends geesefsd an
+unmount request keyed by the same container id; geesefsd terminates GeeSFS (a
+graceful `SIGTERM` lets it unmount the FUSE filesystem itself) and drops the
+container's state. Cleanup is idempotent — an unmount for an unknown or
+already-cleaned container succeeds — so a repeated `poststop` never fails.
+
+Because the mount only ever exists inside the container's mount namespace (the
+supervisor enters it with `nsenter -m`), it is never visible on the host; the
+integration test asserts no mount is left on the host afterward. See
 [integration-test.md](./integration-test.md).

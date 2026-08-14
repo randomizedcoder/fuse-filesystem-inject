@@ -34,6 +34,9 @@ const selftestFlag = "--geesefs-selftest"
 const (
 	mountTimeout = 90 * time.Second
 	pollInterval = 500 * time.Millisecond
+	// stopTimeout bounds how long a graceful GeeSFS SIGTERM is given before we
+	// SIGKILL it during cleanup.
+	stopTimeout = 10 * time.Second
 )
 
 // geesefsFSType is what findmnt reports for a live GeeSFS mount.
@@ -96,6 +99,14 @@ func daemon() int {
 	}
 	defer l.Close()
 
+	// Root-only: a client of this socket can ask geesefsd to setns() into an
+	// arbitrary pid and mount there, so only root (the hook's context) may reach
+	// it. Never widen these permissions.
+	if err := os.Chmod(socket, 0o600); err != nil {
+		logf("FATAL: securing socket %s: %v", socket, err)
+		return 1
+	}
+
 	logf("supervisor listening on %s (default mount path: %s)", socket, contract.DefaultMountPath)
 
 	srv := &server{reg: newRegistry(), mounter: realMounter{}}
@@ -143,13 +154,27 @@ func (s *server) handle(conn net.Conn) {
 	}
 }
 
-// serve is the pure-ish core: it validates the request (transport + policy, the
-// latter as defense in depth since this is the privileged component), skips
-// work that is already done (idempotent), performs the mount, and records it.
-func (s *server) serve(req protocol.MountRequest) protocol.MountResponse {
+// serve is the core: it validates the request and dispatches to the mount or
+// unmount handler. Validation covers transport invariants and (for a mount) the
+// policy, re-checked here as defense in depth since this is the privileged
+// component.
+func (s *server) serve(req protocol.Request) protocol.Response {
 	if err := req.Validate(); err != nil {
 		return protocol.Failed(err)
 	}
+	switch req.Op {
+	case protocol.OpMount:
+		return s.serveMount(req)
+	case protocol.OpUnmount:
+		return s.serveUnmount(req)
+	default:
+		// Unreachable: Validate already rejected unknown operations.
+		return protocol.Failed(fmt.Errorf("unsupported operation %q", req.Op))
+	}
+}
+
+// serveMount establishes the mount for req, idempotently, and records it.
+func (s *server) serveMount(req protocol.Request) protocol.Response {
 	if err := policy.Validate(policy.Policy{Bucket: req.Bucket, Mount: req.Mount, Endpoint: req.Endpoint}); err != nil {
 		logf("rejecting mount for %s: %v", req.ID, err)
 		return protocol.Failed(err)
@@ -157,7 +182,7 @@ func (s *server) serve(req protocol.MountRequest) protocol.MountResponse {
 
 	if _, ok := s.reg.get(req.ID); ok {
 		logf("container %s already mounted (idempotent)", req.ID)
-		return protocol.MountResponse{Status: protocol.StatusReady}
+		return protocol.Response{Status: protocol.StatusReady}
 	}
 
 	logf("mounting bucket=%s at %s in container %s (pid %d)", req.Bucket, req.Mount, req.ID, req.PID)
@@ -169,20 +194,41 @@ func (s *server) serve(req protocol.MountRequest) protocol.MountResponse {
 
 	s.reg.add(&mountState{req: req, proc: proc})
 	logf("mount ready for %s", req.ID)
-	return protocol.MountResponse{Status: protocol.StatusReady}
+	return protocol.Response{Status: protocol.StatusReady}
 }
 
-// mounter establishes a single mount and returns the GeeSFS process handle so
-// the supervisor can monitor and (Phase 5) reap it.
+// serveUnmount reaps the GeeSFS process for req's container and drops its state.
+// It is idempotent: unmounting an unknown (or already-cleaned) container is a
+// no-op success, so a duplicate poststop never fails. Only this container's own
+// entry is touched — the per-id keying is what keeps containers isolated.
+func (s *server) serveUnmount(req protocol.Request) protocol.Response {
+	st, ok := s.reg.remove(req.ID)
+	if !ok {
+		logf("no mount to clean up for %s (idempotent)", req.ID)
+		return protocol.Response{Status: protocol.StatusReady}
+	}
+	if err := s.mounter.Unmount(st); err != nil {
+		// State is already dropped; report the failure but do not resurrect it.
+		logf("cleanup for %s reported: %v", req.ID, err)
+		return protocol.Failed(err)
+	}
+	logf("cleaned up %s", req.ID)
+	return protocol.Response{Status: protocol.StatusReady}
+}
+
+// mounter establishes and tears down a single container's mount. Mount returns
+// the GeeSFS process handle so the supervisor can reap it on Unmount. It is an
+// interface so the request-handling logic can be tested without setns/geesefs.
 type mounter interface {
-	Mount(req protocol.MountRequest) (*os.Process, error)
+	Mount(req protocol.Request) (*os.Process, error)
+	Unmount(st *mountState) error
 }
 
 // realMounter performs the actual setns()+mount by shelling out to nsenter and
 // geesefs, then polling findmnt until the FUSE mount is live.
 type realMounter struct{}
 
-func (realMounter) Mount(req protocol.MountRequest) (*os.Process, error) {
+func (realMounter) Mount(req protocol.Request) (*os.Process, error) {
 	cmd := exec.Command("nsenter", geesefsArgs(req)...)
 	// GeeSFS reads S3 credentials from the environment (AWS_ACCESS_KEY_ID etc.),
 	// which geesefsd inherits from its systemd unit — they never touch argv.
@@ -195,16 +241,47 @@ func (realMounter) Mount(req protocol.MountRequest) (*os.Process, error) {
 
 	if err := waitForMount(req); err != nil {
 		// Mount never came up: don't leak the GeeSFS process.
-		_ = cmd.Process.Kill()
-		_, _ = cmd.Process.Wait()
+		stopProcess(cmd.Process, stopTimeout)
 		return nil, err
 	}
 	return cmd.Process, nil
 }
 
+// Unmount reaps the container's GeeSFS process. A clean SIGTERM lets GeeSFS
+// unmount the FUSE filesystem itself; when its process is gone, so is the mount
+// (which only ever existed in the container's mount namespace, never on the
+// host). By poststop time the namespace is usually already torn down, so this
+// is best-effort reaping rather than an explicit umount.
+func (realMounter) Unmount(st *mountState) error {
+	if st.proc == nil {
+		return nil
+	}
+	stopProcess(st.proc, stopTimeout)
+	return nil
+}
+
+// stopProcess asks proc to exit (SIGTERM), waits up to timeout, then SIGKILLs
+// if it is still alive, and reaps it either way.
+func stopProcess(proc *os.Process, timeout time.Duration) {
+	_ = proc.Signal(syscall.SIGTERM)
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = proc.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		_ = proc.Kill()
+		<-done
+	}
+}
+
 // waitForMount polls findmnt inside the container mount namespace until the
 // GeeSFS FUSE mount appears or the bounded timeout elapses (fail closed).
-func waitForMount(req protocol.MountRequest) error {
+func waitForMount(req protocol.Request) error {
 	deadline := time.Now().Add(mountTimeout)
 	for {
 		out, _ := exec.Command("nsenter", findmntArgs(req.PID, req.Mount)...).Output()
@@ -224,7 +301,7 @@ func waitForMount(req protocol.MountRequest) error {
 // container's MOUNT namespace only (-m), leaving the network namespace as the
 // host's so the S3 endpoint stays reachable. GeeSFS runs in the foreground (-f)
 // so geesefsd owns its lifetime.
-func geesefsArgs(req protocol.MountRequest) []string {
+func geesefsArgs(req protocol.Request) []string {
 	return []string{
 		"-t", strconv.Itoa(req.PID), "-m", "--",
 		"geesefs", "-f", "--endpoint", req.Endpoint, req.Bucket, req.Mount,

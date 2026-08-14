@@ -13,7 +13,7 @@ import (
 // tests can exercise the registry without a real process. Cleanup (Phase 5)
 // reaps proc and unmounts using req.
 type mountState struct {
-	req  protocol.MountRequest
+	req  protocol.Request
 	proc *os.Process
 }
 
