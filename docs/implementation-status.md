@@ -15,7 +15,7 @@ phase's status or a definition-of-done item flips** — it is the single place t
 | 1 | Go module scaffold + Nix build wiring (behavior-preserving) | ☑ | `internal/cli` arg-parse table (+ `go-test`/`go-vet`/`gofmt`/`contract-parity` checks) | done — Go multi-call binary; no behavior change; microVM still builds |
 | 2 | Policy parse + untrusted-annotation validation | ☑ | `internal/policy` table (25 cases) via `go-test` | done — fail-closed wired into geesefs-runc create |
 | 3 | `geesefs-runc` `config.json` (OCI spec) mutation | ☑ | `internal/ocispec` table + idempotency via `go-test` | done — real mutation wired; hook switched to `createRuntime` |
-| 4 | Hook + `geesefsd` mount (setns + mount-before-app) | ☐ | argv / readiness / codec tables | first pass where the mount goes live |
+| 4 | Hook + `geesefsd` mount (setns + mount-before-app) | ☑ | protocol codec, OCI-state parse, mount/findmnt argv, readiness, registry, `serve` tables via `go-test` | done — hook↔geesefsd unix-socket protocol + real `nsenter -m` mount wired (live mount exercised by the integration test) |
 | 5 | Cleanup lifecycle + cross-container isolation | ☐ | cleanup-keying table | no leftover host mount; per-id isolation |
 | 6 | Full E2E green + CI wiring + final review | ☐ | all unit + lint checks | integration test prints SUCCESS |
 
@@ -53,14 +53,16 @@ phase's status or a definition-of-done item flips** — it is the single place t
 - [x] ~~Nix check `test-go-ocispec`~~ **covered by `go-test`**
 - [x] review gate: `nix flake check` → all checks passed
 
-### Phase 4 — Hook + `geesefsd` mount
-- [ ] `hook` reads OCI state JSON on stdin; requests mount over unix socket; blocks until READY/timeout
-- [ ] non-zero hook exit fails container startup (mount-before-app, fail-closed)
-- [ ] `geesefsd` fetches creds, `nsenter -t <pid> -m` (retain host net ns), launches GeeSFS
-- [ ] poll `findmnt` for `fuse.geesefs` until ready or bounded timeout; state keyed by container id
-- [ ] integration test reaches "mount live + `python /models/hello.py` from S3" (steps 3–4)
-- [ ] table tests: argv construction, readiness state machine, request/response codec, per-id state map
-- [ ] review gate
+### Phase 4 — Hook + `geesefsd` mount  ✅
+- [x] `hook` reads OCI state JSON on stdin; requests mount over unix socket (`internal/protocol`); blocks until READY/timeout
+- [x] non-zero hook exit fails container startup (mount-before-app, fail-closed)
+- [x] `geesefsd` daemon listens on the socket; creds come from its systemd environment (never argv); `nsenter -t <pid> -m` (mount ns only → retains host net ns) launches GeeSFS
+- [x] poll `findmnt` for `fuse.geesefs` until ready or bounded timeout; state keyed by container id (`registry`)
+- [x] policy re-validated in `geesefsd` (`policy.Validate`) as defense in depth before any privileged action
+- [ ] integration test reaches "mount live + `python /models/hello.py` from S3" (steps 3–4) — *needs a KVM run; not gated by `nix flake check`*
+- [x] table tests: protocol codec, OCI-state parse, mount/findmnt argv, readiness, per-id registry, `serve` (valid/idempotent/fail-closed)
+- [x] ~~Nix checks per package~~ **covered by `go-test`** (`go test ./...`)
+- [x] review gate: `go vet` + `go test` clean locally; `nix flake check` (below)
 
 ### Phase 5 — Cleanup lifecycle + cross-container isolation
 - [ ] container-exit cleanup (poststop hook or `geesefsd` monitor, keyed by id): unmount + reap + drop state

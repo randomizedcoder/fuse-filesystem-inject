@@ -1,8 +1,13 @@
 # nix/modules/injection.nix
 #
 # Runs the host-side GeeSFS supervisor (geesefsd) as a systemd service on the
-# VM. geesefs-runc's startContainer hook talks to this daemon, which enters the
-# target container's mount namespace and establishes the S3 mount.
+# VM. geesefs-runc installs a createRuntime hook (geesefs-hook) into matched
+# containers; the hook talks to this daemon over its unix socket, and the daemon
+# enters the target container's mount namespace and establishes the S3 mount.
+#
+# S3 credentials are supplied here, out-of-band, via the daemon's environment —
+# never baked into the application image or the GeeSFS OCI image. GeeSFS (and
+# the nsenter'd child) inherit them from the unit; they never appear in argv.
 #
 # (The wrapper runtime itself is installed via the docker daemon `runtimes`
 # entry in modules/docker.nix, not here.)
@@ -31,6 +36,16 @@
       "minio-bucket-bootstrap.service"
     ];
     wantedBy = [ "multi-user.target" ];
+
+    # S3 credentials for GeeSFS, supplied out-of-band (not in any image). GeeSFS
+    # reads the standard AWS environment variables; the nsenter'd child inherits
+    # them, so they never appear on a command line.
+    environment = {
+      AWS_ACCESS_KEY_ID = constants.minio.accessKey;
+      AWS_SECRET_ACCESS_KEY = constants.minio.secretKey;
+      AWS_REGION = constants.minio.region;
+      AWS_DEFAULT_REGION = constants.minio.region;
+    };
 
     serviceConfig = {
       ExecStart = "${geesefsd}/bin/geesefsd daemon";

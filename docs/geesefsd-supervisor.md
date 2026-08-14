@@ -48,15 +48,29 @@ supplied out-of-band, and cleanup is tied to container lifetime.
 The container id is the key linking runtime setup (from
 [geesefs-runc.md](./geesefs-runc.md)) with supervisor state.
 
-## Scaffold status
+## Implementation status
 
 `geesefsd` is the `geesefsd` role of the Go multi-call binary `geesefs-inject`
-(role logic in `internal/supervisor`). It has two subcommands:
+(role logic in `internal/supervisor`). It runs as the systemd service
+(`nix/modules/injection.nix`) via `geesefsd daemon`, which **listens on a unix
+socket** (`/run/geesefsd.sock`, see `internal/contract`) and serves one mount
+request per connection:
 
-- `daemon` — runs as the systemd service (`nix/modules/injection.nix`); an idle
-  supervisor loop (waits for `SIGTERM`/`SIGINT`) so the unit is `Up`.
-- `mount <id> <bucket> <mount> <endpoint>` — invoked by the hook; currently
-  **logs the intended `nsenter … geesefs …` + readiness poll and exits non-zero**
-  ("not implemented"), so startup does not silently proceed over an empty mount.
-  The real `setns()` + mount is Phase 4 — see the
-  [implementation plan](./implementation-plan.md).
+1. Read a `MountRequest` (`internal/protocol`) — container id, pid, and the
+   validated policy — from the `createRuntime` hook.
+2. Re-validate the policy (`policy.Validate`) as defense in depth, since this is
+   the privileged component doing the `setns()` + mount.
+3. If that id is already mounted, reply `READY` (idempotent). Otherwise launch
+   GeeSFS via `nsenter -t <pid> -m -- geesefs …` — entering the container's
+   **mount** namespace only, so the host network namespace (and thus the S3
+   endpoint) stays reachable — with S3 credentials taken from the daemon's
+   environment (never argv).
+4. Poll `findmnt` inside the container mount namespace until the `fuse.geesefs`
+   mount is live or a bounded timeout elapses (fail closed), record it keyed by
+   container id, and reply `READY` / `FAILED`.
+
+The pure helpers (mount/findmnt argv construction, readiness parsing, the per-id
+registry, and the request-serving logic behind a `mounter` interface) are
+table-tested; the live `setns()` + GeeSFS mount is exercised by the integration
+test. Cleanup on container exit is Phase 5 — see the
+[implementation plan](./implementation-plan.md).

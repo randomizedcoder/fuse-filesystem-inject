@@ -53,17 +53,25 @@ func Parse(annotations map[string]string) (p Policy, matched bool, err error) {
 		Endpoint: annotations[contract.AnnEndpoint],
 	}
 
-	if err := validateBucket(p.Bucket); err != nil {
-		return Policy{}, true, err
-	}
-	if err := validateMount(p.Mount); err != nil {
-		return Policy{}, true, err
-	}
-	if err := validateEndpoint(p.Endpoint); err != nil {
+	if err := Validate(p); err != nil {
 		return Policy{}, true, err
 	}
 
 	return p, true, nil
+}
+
+// Validate checks the fields of an already-assembled Policy. It is the single
+// definition of what a safe policy is, shared by Parse (the geesefs-runc entry
+// point) and geesefsd, which re-validates every mount request as defense in
+// depth before it does anything privileged (setns + mount).
+func Validate(p Policy) error {
+	if err := validateBucket(p.Bucket); err != nil {
+		return err
+	}
+	if err := validateMount(p.Mount); err != nil {
+		return err
+	}
+	return validateEndpoint(p.Endpoint)
 }
 
 func validateBucket(bucket string) error {

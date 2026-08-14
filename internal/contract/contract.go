@@ -35,3 +35,12 @@ const (
 // DefaultMountPath is where the S3 bucket is mounted when the annotation does
 // not specify one. Matches constants.mountPath on the Nix side.
 const DefaultMountPath = "/models"
+
+// geesefsd listens on a unix socket; the createRuntime hook connects to it to
+// request a mount and block until the mount is ready.
+const (
+	// SupervisorSocket is the default unix socket geesefsd listens on.
+	SupervisorSocket = "/run/geesefsd.sock"
+	// SocketEnv overrides SupervisorSocket for both ends (used by tests).
+	SocketEnv = "GEESEFS_SOCKET"
+)

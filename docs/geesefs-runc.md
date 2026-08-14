@@ -69,8 +69,10 @@ cgroup rule, `CAP_SYS_ADMIN`, the mount target, and the `createRuntime` hook —
 then `exec`s the real `runc`. The mutation is pure, idempotent, and preserves
 every other spec field.
 
-Not wired yet: the `createRuntime` hook runs `geesefs-hook`, which is a no-op
-until Phase 4 connects it to `geesefsd` for the actual `setns()` mount. So a
-matched container starts with the device/caps/hook and an empty tmpfs at the
-mount path, but no S3 mount yet — see [integration-test.md](./integration-test.md)
-and the [implementation plan](./implementation-plan.md).
+The `createRuntime` hook runs `geesefs-hook`, which reads the OCI container
+state, asks `geesefsd` over its unix socket to establish the mount, and blocks
+until it is ready (fail-closed) — see
+[geesefsd-supervisor.md](./geesefsd-supervisor.md). Cleanup on container exit is
+Phase 5; the end-to-end path is exercised by
+[integration-test.md](./integration-test.md) (see the
+[implementation plan](./implementation-plan.md)).
