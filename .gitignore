@@ -1,0 +1,6 @@
+# Nix build symlinks
+/result
+/result-*
+
+# Stray Go build output (the binary is built via Nix, never committed)
+/geesefs-inject

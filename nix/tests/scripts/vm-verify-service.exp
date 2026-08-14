@@ -1,0 +1,138 @@
+#!/usr/bin/env expect
+###############################################################################
+# vm-verify-service.exp — verify the geesefs-injection-test service completed.
+#
+# Connects to the VM's virtio console, and:
+#   Phase 1  a quick `systemctl is-active` check for an already-finished oneshot
+#   Phase 2  otherwise stream `journalctl -fu` and match the success/failure
+#            sentinels emitted by the in-guest test.
+#
+# Exit 0 iff the service reported success. Hostname-based prompt matching keeps
+# it deterministic (the guest autologs in with a fixed hostname).
+#
+# Usage: vm-verify-service.exp <port> <hostname> [timeout] [poll_interval]
+#
+# Adapted from xdp2/nix/microvms/scripts/vm-verify-service.exp.
+###############################################################################
+
+if {$argc < 2} {
+    send_user "Usage: vm-verify-service.exp <port> <hostname> \[timeout\] \[poll_interval\]\n"
+    exit 1
+}
+
+set port [lindex $argv 0]
+set hostname [lindex $argv 1]
+set max_timeout [expr {$argc > 2 ? [lindex $argv 2] : 300}]
+set poll_interval [expr {$argc > 3 ? [lindex $argv 3] : 2}]
+
+set service "geesefs-injection-test.service"
+set prompt_pattern "root@${hostname}:\[^#\]*#"
+
+log_user 0
+send_user "=== Verify $service ===\n"
+send_user "Port: $port  Timeout: ${max_timeout}s\n\n"
+
+spawn nc 127.0.0.1 $port
+send "\r"
+
+# Wait for the shell prompt (VM may still be booting).
+set timeout 60
+set prompt_attempts 0
+set max_prompt_attempts 5
+while {$prompt_attempts < $max_prompt_attempts} {
+    expect {
+        -re $prompt_pattern { break }
+        timeout {
+            incr prompt_attempts
+            if {$prompt_attempts < $max_prompt_attempts} {
+                send_user "  Waiting for shell prompt... ($prompt_attempts/$max_prompt_attempts)\n"
+                send "\r"
+            } else {
+                send_user "ERROR: no prompt after $max_prompt_attempts attempts\n"; exit 1
+            }
+        }
+        eof { send_user "ERROR: connection failed\n"; exit 1 }
+    }
+}
+
+###############################################################################
+# Phase 1: quick status check (service may have finished before we connected).
+###############################################################################
+set service_status "unknown"
+
+send "systemctl is-active $service 2>/dev/null\r"
+set timeout 5
+expect {
+    -re {(active)[\r\n]}   { set service_status "success" }
+    -re {(failed)[\r\n]}   { set service_status "failed" }
+    -re {(activating)[\r\n]} { set service_status "activating" }
+    -re $prompt_pattern    { }
+    timeout                { }
+}
+expect { -re $prompt_pattern { } timeout { } }
+
+if {$service_status eq "success"} {
+    send_user "PASS: service already completed successfully\n"
+    send "exit\r"; expect eof; exit 0
+} elseif {$service_status eq "failed"} {
+    send_user "FAIL: service already failed\n"
+    send "exit\r"; expect eof; exit 1
+}
+
+###############################################################################
+# Phase 2: stream the journal and match sentinels.
+###############################################################################
+send_user "  Service still activating, monitoring journal...\n"
+send "journalctl -fu $service --no-pager 2>&1\r"
+
+set timeout $poll_interval
+set total_elapsed 0
+set skip_first_line 1
+
+expect {
+    -re {GEESEFS-INJECTION-TEST: SUCCESS} {
+        set service_status "success"
+        send_user "PASS: injection test reported SUCCESS\n"
+    }
+    -re {geesefs-injection-test: FAIL} {
+        set service_status "failed"
+        send_user "FAIL: injection test reported failure\n"
+    }
+    -re {geesefs-injection-test\.service: Failed} {
+        set service_status "failed"
+        send_user "FAIL: service failed (systemd)\n"
+    }
+    -re {geesefs-injection-test\.service: Main process exited, code=exited, status=[1-9]} {
+        set service_status "failed"
+        send_user "FAIL: service exited non-zero\n"
+    }
+    -re "\r\n" {
+        if {$skip_first_line} { set skip_first_line 0 }
+        exp_continue -continue_timer
+    }
+    timeout {
+        incr total_elapsed $poll_interval
+        if {$total_elapsed >= $max_timeout} {
+            set service_status "timeout"
+            send_user "FAIL: timeout after ${max_timeout}s\n"
+        } else {
+            send_user "  Waiting... (${total_elapsed}/${max_timeout}s)\n"
+            exp_continue
+        }
+    }
+    eof {
+        set service_status "eof"
+        send_user "ERROR: connection closed unexpectedly\n"
+    }
+}
+
+# Stop journalctl -f and leave cleanly.
+send "\x03"; send "\r"
+set timeout 5
+expect { -re $prompt_pattern { } timeout { } }
+send "exit\r"; expect eof
+
+switch $service_status {
+    "success" { exit 0 }
+    default   { exit 1 }
+}

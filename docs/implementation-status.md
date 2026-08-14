@@ -1,0 +1,76 @@
+# Implementation Status
+
+[← design overview](./design.md) · plan: [implementation-plan.md](./implementation-plan.md)
+
+Living tracker for the [implementation plan](./implementation-plan.md). **Update this whenever a
+phase's status or a definition-of-done item flips** — it is the single place to see how far the
+`geesefs-runc` / `geesefsd` implementation has progressed past the scaffold.
+
+**Legend:** ☐ todo · ◐ in-progress · ☑ done
+
+## Overview
+
+| Phase | Scope | Status | Tests | Notes |
+|-------|-------|--------|-------|-------|
+| 1 | Go module scaffold + Nix build wiring (behavior-preserving) | ☑ | `internal/cli` arg-parse table (+ `go-test`/`go-vet`/`gofmt`/`contract-parity` checks) | done — Go multi-call binary; no behavior change; microVM still builds |
+| 2 | Policy parse + untrusted-annotation validation | ☐ | `test-go-policy` | fail-closed on invalid input |
+| 3 | `geesefs-runc` `config.json` (OCI spec) mutation | ☐ | `test-go-ocispec` (+ golden) | switch hook to `createRuntime` |
+| 4 | Hook + `geesefsd` mount (setns + mount-before-app) | ☐ | argv / readiness / codec tables | first pass where the mount goes live |
+| 5 | Cleanup lifecycle + cross-container isolation | ☐ | cleanup-keying table | no leftover host mount; per-id isolation |
+| 6 | Full E2E green + CI wiring + final review | ☐ | all unit + lint checks | integration test prints SUCCESS |
+
+## Per-phase checklists
+
+### Phase 1 — Go module scaffold + Nix build wiring  ✅
+- [x] `go.mod` + `cmd/geesefs-inject/main.go` multi-call dispatch (`geesefs-runc` / `geesefsd` / `geesefs-hook`)
+- [x] `internal/` skeleton (`contract`, `cli` + tests, `runc`, `supervisor`, `hook`, empty `policy` / `ocispec`)
+- [x] `nix/lib/mkGoBinary.nix` (builds `geesefs-inject`, installs per-role argv[0] wrappers)
+- [x] ~~`nix/lib/goModules.nix`~~ **N/A** — the module is stdlib-only, so `vendorHash = null` and there is no vendor tree to build (documented in `mkGoBinary.nix`)
+- [x] `geesefs-runc` / `geesefsd` build from the Go module (both are the one `geesefs-inject` derivation; old `nix/packages/*.nix` stubs removed)
+- [x] `nix build .#geesefs-runc .#geesefsd .#geesefs-inject` produce Go binaries; `--geesefs-selftest` still passes; microVM (`.#microvm`) still builds
+- [x] integration test unchanged (still stub; `geesefsd mount` fails closed)
+- [x] `internal/cli` arg-parse table test (11 cases incl. docker-style global value flags)
+- [x] review gate: `nixfmt-check` + `gofmt` + `go-vet` + `go-test` + `contract-parity` all clean (`nix flake check` → all checks passed)
+
+### Phase 2 — Policy parse + untrusted-annotation validation
+- [ ] `internal/policy`: annotations → typed `Policy{Enabled,Bucket,Mount,Endpoint}`
+- [ ] validate mount path (absolute, `path.Clean`, no `..`/escape)
+- [ ] validate bucket charset + endpoint scheme/host allowlist
+- [ ] invalid input fails closed; unmatched passes through
+- [ ] table-driven tests incl. adversarial cases (`../`, relative, `/`, `/proc`, empty, over-long, bad scheme)
+- [ ] Nix check `test-go-policy`
+- [ ] review gate
+
+### Phase 3 — `geesefs-runc` config.json mutation
+- [ ] `internal/ocispec`: add `/dev/fuse` device + cgroup rule `c 10:229 rwm`
+- [ ] add `CAP_SYS_ADMIN` (bounding/effective/permitted)
+- [ ] add mount-target dir + hook registration
+- [ ] idempotent; unmatched → byte-identical spec
+- [ ] hook type is `createRuntime` (not `startContainer`); docs updated
+- [ ] matched `create` writes spec then `exec runc`
+- [ ] table-driven + golden before/after tests; malformed spec → error
+- [ ] Nix check `test-go-ocispec`
+- [ ] review gate
+
+### Phase 4 — Hook + `geesefsd` mount
+- [ ] `hook` reads OCI state JSON on stdin; requests mount over unix socket; blocks until READY/timeout
+- [ ] non-zero hook exit fails container startup (mount-before-app, fail-closed)
+- [ ] `geesefsd` fetches creds, `nsenter -t <pid> -m` (retain host net ns), launches GeeSFS
+- [ ] poll `findmnt` for `fuse.geesefs` until ready or bounded timeout; state keyed by container id
+- [ ] integration test reaches "mount live + `python /models/hello.py` from S3" (steps 3–4)
+- [ ] table tests: argv construction, readiness state machine, request/response codec, per-id state map
+- [ ] review gate
+
+### Phase 5 — Cleanup lifecycle + cross-container isolation
+- [ ] container-exit cleanup (poststop hook or `geesefsd` monitor, keyed by id): unmount + reap + drop state
+- [ ] integration test "no leftover mount on host" passes
+- [ ] second-container assertion shows per-id isolation
+- [ ] cleanup-keying + idempotent-unmount table test
+- [ ] review gate
+
+### Phase 6 — Full E2E green + CI wiring + final review
+- [ ] `nix run .#integration-test` prints `GEESEFS-INJECTION-TEST: SUCCESS`
+- [ ] `nix flake check` green for all Go unit checks + lint
+- [ ] documented why the integration test stays a `nix run` app (needs KVM + network)
+- [ ] `design.md` + README Status flipped from "scaffold/stubs" to "implemented"
+- [ ] final idiomatic / DRY sweep across Go + Nix
