@@ -94,7 +94,7 @@ in
           --label ${constants.annotations.mount}=${constants.mountPath} \
           --label ${constants.annotations.endpoint}=${constants.minio.endpoint} \
           ${constants.pytorchImage} \
-          bash -lc 'findmnt ${constants.mountPath}; df -h ${constants.mountPath}; python ${constants.mountPath}/hello.py'
+          bash -lc 'grep " ${constants.mountPath} " /proc/mounts; df -h ${constants.mountPath}; python ${constants.mountPath}/hello.py'
 
       The image is UNMODIFIED. geesefs-runc adds /dev/fuse + caps and geesefsd
       mounts the '${constants.minio.bucket}' S3 bucket at ${constants.mountPath}

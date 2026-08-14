@@ -24,8 +24,7 @@ pkgs.mkShell {
     versions.socat
     versions.expect
     versions.curl
-    versions.geesefs
-    versions.fuse3
+    versions.geesefsStatic
   ];
 
   shellHook = ''
@@ -41,9 +40,10 @@ pkgs.mkShell {
       nix run   .#vm-stop             Stop the VM
 
     Injection payload:
-      nix build .#oci-geesefs         GeeSFS OCI image (./result | docker load)
-      nix build .#geesefs-runc        The OCI-config injector (stub)
-      nix build .#geesefsd            The host-side supervisor (stub)
+      nix build .#geesefs-static      Static geesefs binary (bind-mounted into containers)
+      nix build .#fusermount3-static  Static fusermount3 helper (bind-mounted alongside)
+      nix build .#geesefs-runc        The OCI-config injector
+      nix build .#geesefsd            The host-side supervisor
 
     End-to-end proof:
       nix run   .#integration-test    Boot VM, inject into PyTorch, assert mount + isolation

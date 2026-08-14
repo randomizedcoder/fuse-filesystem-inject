@@ -4,3 +4,6 @@
 
 # Stray Go build output (the binary is built via Nix, never committed)
 /geesefs-inject
+
+# MicroVM runtime data disk (constants.dataImage), created when the VM boots
+/fuse-inject-data.img

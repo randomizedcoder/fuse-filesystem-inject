@@ -39,7 +39,7 @@ const (
 	stopTimeout = 10 * time.Second
 )
 
-// geesefsFSType is what findmnt reports for a live GeeSFS mount.
+// geesefsFSType is the filesystem type a live GeeSFS mount reports in mountinfo.
 const geesefsFSType = "fuse.geesefs"
 
 func logf(format string, args ...any) {
@@ -67,20 +67,18 @@ func Run(args []string) int {
 }
 
 func selftest() int {
-	code := 0
-	for _, tool := range []string{"geesefs", "nsenter", "findmnt"} {
-		p, err := exec.LookPath(tool)
-		if err != nil {
-			logf("selftest: %s not found on PATH: %v", tool, err)
-			code = 1
-			continue
-		}
-		logf("selftest: found %s=%s", tool, p)
+	// geesefsd only shells out to nsenter (to enter the container's mount
+	// namespace); geesefs + fusermount3 are the static payload bind-mounted into
+	// each container, and readiness is read from /proc/<pid>/mountinfo, so
+	// neither geesefs nor findmnt needs to be on geesefsd's host PATH.
+	p, err := exec.LookPath("nsenter")
+	if err != nil {
+		logf("selftest: nsenter not found on PATH: %v", err)
+		return 1
 	}
-	if code == 0 {
-		logf("selftest ok")
-	}
-	return code
+	logf("selftest: found nsenter=%s", p)
+	logf("selftest ok")
+	return 0
 }
 
 // daemon runs the long-lived supervisor: it listens on the unix socket and
@@ -225,14 +223,13 @@ type mounter interface {
 }
 
 // realMounter performs the actual setns()+mount by shelling out to nsenter and
-// geesefs, then polling findmnt until the FUSE mount is live.
+// the in-container static geesefs, then polling the container's mountinfo until
+// the FUSE mount is live.
 type realMounter struct{}
 
 func (realMounter) Mount(req protocol.Request) (*os.Process, error) {
 	cmd := exec.Command("nsenter", geesefsArgs(req)...)
-	// GeeSFS reads S3 credentials from the environment (AWS_ACCESS_KEY_ID etc.),
-	// which geesefsd inherits from its systemd unit — they never touch argv.
-	cmd.Env = os.Environ()
+	cmd.Env = mountEnv()
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
@@ -279,13 +276,17 @@ func stopProcess(proc *os.Process, timeout time.Duration) {
 	}
 }
 
-// waitForMount polls findmnt inside the container mount namespace until the
-// GeeSFS FUSE mount appears or the bounded timeout elapses (fail closed).
+// waitForMount polls the target container's mount table until the GeeSFS FUSE
+// mount appears or the bounded timeout elapses (fail closed). It reads
+// /proc/<pid>/mountinfo from the host — which reflects that pid's (the
+// container's) mount namespace — so it needs no helper binary inside the
+// container.
 func waitForMount(req protocol.Request) error {
+	mountinfoPath := fmt.Sprintf("/proc/%d/mountinfo", req.PID)
 	deadline := time.Now().Add(mountTimeout)
 	for {
-		out, _ := exec.Command("nsenter", findmntArgs(req.PID, req.Mount)...).Output()
-		if mountReady(string(out)) {
+		data, _ := os.ReadFile(mountinfoPath)
+		if mountReady(data, req.Mount) {
 			return nil
 		}
 		if time.Now().After(deadline) {
@@ -299,25 +300,49 @@ func waitForMount(req protocol.Request) error {
 
 // geesefsArgs builds the nsenter argv that launches GeeSFS inside the target
 // container's MOUNT namespace only (-m), leaving the network namespace as the
-// host's so the S3 endpoint stays reachable. GeeSFS runs in the foreground (-f)
-// so geesefsd owns its lifetime.
+// host's so the S3 endpoint stays reachable. It execs the static geesefs
+// bind-mounted into the container (contract.PayloadGeesefs), never a host copy.
+// GeeSFS runs in the foreground (-f) so geesefsd owns its lifetime.
 func geesefsArgs(req protocol.Request) []string {
 	return []string{
 		"-t", strconv.Itoa(req.PID), "-m", "--",
-		"geesefs", "-f", "--endpoint", req.Endpoint, req.Bucket, req.Mount,
+		contract.PayloadGeesefs, "-f", "--endpoint", req.Endpoint, req.Bucket, req.Mount,
 	}
 }
 
-// findmntArgs builds the nsenter argv that queries the mount's filesystem type
-// inside the container mount namespace.
-func findmntArgs(pid int, mount string) []string {
-	return []string{
-		"-t", strconv.Itoa(pid), "-m", "--",
-		"findmnt", "-n", "-o", "FSTYPE", mount,
+// mountEnv is the environment GeeSFS runs with. It inherits geesefsd's
+// environment (notably the AWS_* S3 credentials from the systemd unit — they
+// never touch argv) but forces PATH to the in-container payload directory so
+// GeeSFS execs the bind-mounted static fusermount3, not any host copy.
+func mountEnv() []string {
+	env := os.Environ()
+	out := make([]string, 0, len(env)+1)
+	for _, kv := range env {
+		if !strings.HasPrefix(kv, "PATH=") {
+			out = append(out, kv)
+		}
 	}
+	return append(out, "PATH="+contract.PayloadDir)
 }
 
-// mountReady reports whether findmnt's FSTYPE output names a live GeeSFS mount.
-func mountReady(findmntOutput string) bool {
-	return strings.TrimSpace(findmntOutput) == geesefsFSType
+// mountReady reports whether the container's mountinfo shows a live GeeSFS FUSE
+// mount at mount. It parses /proc/<pid>/mountinfo lines: fields before the " - "
+// separator hold the mount point (index 4), and the field right after it holds
+// the filesystem type.
+func mountReady(mountinfo []byte, mount string) bool {
+	for _, line := range strings.Split(string(mountinfo), "\n") {
+		before, after, ok := strings.Cut(line, " - ")
+		if !ok {
+			continue
+		}
+		pre := strings.Fields(before)
+		if len(pre) < 5 || pre[4] != mount {
+			continue
+		}
+		post := strings.Fields(after)
+		if len(post) >= 1 && post[0] == geesefsFSType {
+			return true
+		}
+	}
+	return false
 }

@@ -43,7 +43,7 @@ asserts this concretely:
 
 ## Credentials
 
-S3 credentials should not live in the application image or the GeeSFS OCI image.
+S3 credentials should not live in the application image or the GeeSFS payload.
 The host-side supervisor is the natural place to fetch them (workload identity,
 host secret store, short-lived STS, Docker secrets) and hand them to GeeSFS
 directly — keeping them out of arbitrary application filesystems. See

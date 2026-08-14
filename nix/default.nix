@@ -7,20 +7,15 @@
 {
   pkgs,
   lib,
-  system,
   microvm,
   nixpkgs,
-  geesefs-oci,
   src,
 }:
 
 let
   constants = import ./constants.nix;
 
-  versions = import ./versions.nix {
-    inherit pkgs;
-    geesefsPkgs = geesefs-oci.packages.${system};
-  };
+  versions = import ./versions.nix { inherit pkgs; };
 
   # The injection payload: hello-world PyTorch script seeded into MinIO.
   helloScript = ../assets/hello.py;
@@ -95,8 +90,8 @@ in
   packages = {
     microvm = microvmRunner;
     inherit geesefs-inject geesefs-runc geesefsd;
-    geesefs = versions.geesefs;
-    oci-geesefs = versions.oci-geesefs;
+    geesefs-static = versions.geesefsStatic;
+    fusermount3-static = versions.fusermount3Static;
     default = microvmRunner;
   };
 
@@ -163,11 +158,27 @@ in
       touch $out
     '';
 
-    # Cheap sanity check: the packaged geesefs binary actually runs.
-    geesefs-smoke = pkgs.runCommand "geesefs-smoke" { nativeBuildInputs = [ versions.geesefs ]; } ''
-      geesefs --version
-      touch $out
-    '';
+    # The injected payload must actually be static: a dynamically-linked binary
+    # would fail to exec inside a container that lacks the host's /nix closure.
+    # Assert both halves run *and* report as static ELFs (fail closed on drift).
+    geesefs-static-smoke =
+      pkgs.runCommand "geesefs-static-smoke"
+        {
+          nativeBuildInputs = [ pkgs.file ];
+          geesefs = versions.geesefsStatic;
+          fusermount3 = versions.fusermount3Static;
+        }
+        ''
+          "$geesefs/bin/geesefs" --version
+          for b in "$geesefs/bin/geesefs" "$fusermount3/bin/fusermount3"; do
+            if ! file "$b" | grep -q "statically linked"; then
+              echo "geesefs-static-smoke: $b is not statically linked:" >&2
+              file "$b" >&2
+              exit 1
+            fi
+          done
+          touch $out
+        '';
 
     # The wrapper binaries must at least parse + locate their deps (selftest).
     geesefs-runc-smoke =

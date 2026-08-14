@@ -27,13 +27,6 @@
       url = "github:astro/microvm.nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-
-    # The GeeSFS OCI payload. Local path for iteration; swap for the GitHub URL
-    # (github:randomizedcoder/geesefs-oci) to pin a released artifact.
-    geesefs-oci = {
-      url = "path:/home/das/Downloads/geesefs-oci";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
   };
 
   outputs =
@@ -42,7 +35,6 @@
       nixpkgs,
       flake-utils,
       microvm,
-      geesefs-oci,
     }:
     flake-utils.lib.eachSystem
       [
@@ -66,10 +58,8 @@
             inherit
               pkgs
               lib
-              system
               microvm
               nixpkgs
-              geesefs-oci
               ;
             src = ./.;
           };

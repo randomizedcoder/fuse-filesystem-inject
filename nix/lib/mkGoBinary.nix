@@ -7,7 +7,12 @@
 #   (a) sets argv[0] to the role name — the binary dispatches on argv[0]
 #       basename, busybox-style (see cmd/geesefs-inject/main.go), and
 #   (b) puts the runtime tools that role shells out to on PATH (the real runc
-#       for geesefs-runc; geesefs + fuse3 + nsenter for the supervisor/hook).
+#       for geesefs-runc; nsenter for the supervisor — the hook only talks to
+#       the socket), and
+#   (c) for geesefs-runc, records the host store paths of the static GeeSFS
+#       payload (geesefs + fusermount3) it RO bind-mounts into containers.
+#       Passing them via --set both hands them to the injector and pins them
+#       into the wrapper's runtime closure, so they reach the VM store.
 #
 # The Go module is deliberately stdlib-only, so `vendorHash = null` (no vendor
 # tree, fully hermetic). That is also why there is no goModules.nix here, unlike
@@ -53,14 +58,15 @@ let
   };
 
   # PATH closures per role. geesefs-runc only needs the real runc; the
-  # supervisor and hook shell out to geesefs, fusermount3, and nsenter.
+  # supervisor shells out to nsenter (util-linux) to enter container namespaces.
+  # The hook needs nothing external — it only speaks to geesefsd over the socket.
+  # geesefs itself is no longer on any host PATH: geesefsd execs the static copy
+  # bind-mounted inside the container.
   runcPath = lib.makeBinPath [ versions.runc ];
-  daemonPath = lib.makeBinPath [
-    versions.geesefs
-    versions.fuse3
-    versions.util-linux
-    versions.coreutils
-  ];
+  supervisorPath = lib.makeBinPath [ versions.util-linux ];
+
+  geesefsBin = "${versions.geesefsStatic}/bin/geesefs";
+  fusermount3Bin = "${versions.fusermount3Static}/bin/fusermount3";
 in
 pkgs.runCommand "geesefs-inject"
   {
@@ -74,13 +80,14 @@ pkgs.runCommand "geesefs-inject"
     makeWrapper ${raw}/bin/geesefs-inject "$out/bin/geesefs-runc" \
       --argv0 geesefs-runc \
       --set GEESEFS_HOOK_PATH "$out/bin/geesefs-hook" \
+      --set GEESEFS_STATIC_BIN ${geesefsBin} \
+      --set GEESEFS_FUSERMOUNT3_BIN ${fusermount3Bin} \
       --prefix PATH : ${runcPath}
 
     makeWrapper ${raw}/bin/geesefs-inject "$out/bin/geesefsd" \
       --argv0 geesefsd \
-      --prefix PATH : ${daemonPath}
+      --prefix PATH : ${supervisorPath}
 
     makeWrapper ${raw}/bin/geesefs-inject "$out/bin/geesefs-hook" \
-      --argv0 geesefs-hook \
-      --prefix PATH : ${daemonPath}
+      --argv0 geesefs-hook
   ''

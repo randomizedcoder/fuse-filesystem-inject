@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 
+	"github.com/randomizedcoder/fuse-filesystem-inject/internal/contract"
 	"github.com/randomizedcoder/fuse-filesystem-inject/internal/protocol"
 )
 
@@ -14,10 +16,48 @@ func TestGeesefsArgs(t *testing.T) {
 	got := geesefsArgs(req)
 	want := []string{
 		"-t", "4242", "-m", "--",
-		"geesefs", "-f", "--endpoint", "http://127.0.0.1:9000", "models", "/models",
+		contract.PayloadGeesefs, "-f", "--endpoint", "http://127.0.0.1:9000", "models", "/models",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("geesefsArgs:\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestGeesefsArgsExecsInContainerBinary(t *testing.T) {
+	// Regression guard: geesefsd must exec the static payload bind-mounted into
+	// the container, never a bare "geesefs" resolved from some host PATH.
+	got := geesefsArgs(protocol.Request{PID: 1, Bucket: "b", Mount: "/m", Endpoint: "http://x"})
+	for _, a := range got {
+		if a == "geesefs" {
+			t.Error("must exec the in-container payload path, not a bare \"geesefs\"")
+		}
+	}
+	if got[4] != contract.PayloadGeesefs {
+		t.Errorf("expected first post-`--` arg to be %q, got %q", contract.PayloadGeesefs, got[4])
+	}
+}
+
+func TestMountEnv(t *testing.T) {
+	t.Setenv("PATH", "/usr/bin:/bin")
+	t.Setenv("AWS_ACCESS_KEY_ID", "keep-me")
+
+	env := mountEnv()
+
+	var pathVals []string
+	var sawCred bool
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "PATH=") {
+			pathVals = append(pathVals, kv)
+		}
+		if kv == "AWS_ACCESS_KEY_ID=keep-me" {
+			sawCred = true
+		}
+	}
+	if len(pathVals) != 1 || pathVals[0] != "PATH="+contract.PayloadDir {
+		t.Errorf("PATH entries = %v, want exactly [PATH=%s]", pathVals, contract.PayloadDir)
+	}
+	if !sawCred {
+		t.Error("mountEnv must preserve inherited S3 credentials from the environment")
 	}
 }
 
@@ -43,31 +83,31 @@ func TestGeesefsArgsEntersMountNsOnly(t *testing.T) {
 	}
 }
 
-func TestFindmntArgs(t *testing.T) {
-	got := findmntArgs(99, "/models")
-	want := []string{"-t", "99", "-m", "--", "findmnt", "-n", "-o", "FSTYPE", "/models"}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("findmntArgs:\n got %q\nwant %q", got, want)
-	}
-}
-
 func TestMountReady(t *testing.T) {
+	// Realistic /proc/<pid>/mountinfo lines. The " - " separator precedes the
+	// filesystem type; the mount point is the 5th space-separated field before it.
+	const geesefsLine = "212 190 0:52 / /models rw,nosuid,nodev,relatime - fuse.geesefs geesefs rw,user_id=0,group_id=0"
+	const tmpfsLine = "190 155 0:51 / /models rw,nosuid,nodev - tmpfs tmpfs rw,mode=755"
+	const otherFuse = "212 190 0:52 / /models rw - fuse.sshfs sshfs rw"
+	const otherMount = "212 190 0:52 / /data rw - fuse.geesefs geesefs rw"
+
 	tests := []struct {
-		name   string
-		output string
-		want   bool
+		name      string
+		mountinfo string
+		want      bool
 	}{
-		{"live geesefs mount", "fuse.geesefs\n", true},
-		{"no trailing newline", "fuse.geesefs", true},
-		{"leading/trailing space", "  fuse.geesefs  \n", true},
+		{"live geesefs mount", geesefsLine + "\n", true},
+		{"no trailing newline", geesefsLine, true},
+		{"geesefs among other mounts", tmpfsLine + "\n" + geesefsLine + "\n", true},
+		{"only the tmpfs placeholder", tmpfsLine + "\n", false},
 		{"not mounted (empty)", "", false},
-		{"different fs", "tmpfs\n", false},
-		{"other fuse fs", "fuse.sshfs\n", false},
+		{"other fuse fs at mount", otherFuse + "\n", false},
+		{"geesefs but wrong mount point", otherMount + "\n", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := mountReady(tt.output); got != tt.want {
-				t.Errorf("mountReady(%q) = %v, want %v", tt.output, got, tt.want)
+			if got := mountReady([]byte(tt.mountinfo), "/models"); got != tt.want {
+				t.Errorf("mountReady(%q) = %v, want %v", tt.mountinfo, got, tt.want)
 			}
 		})
 	}

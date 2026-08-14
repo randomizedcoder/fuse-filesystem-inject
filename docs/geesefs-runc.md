@@ -18,6 +18,8 @@ narrowly-scoped changes to the OCI spec and then execs the real `runc`.
                       - device /dev/fuse (+ device-cgroup rule)
                       - capability CAP_SYS_ADMIN (minimum for FUSE mount)
                       - the mount target directory in the rootfs
+                      - RO bind mounts of the static geesefs + fusermount3
+                        binaries into /.geesefs/bin (the self-contained payload)
                       - a createRuntime hook -> geesefs-hook mount   -> geesefsd
                       - a poststop     hook -> geesefs-hook unmount -> geesefsd
 6. Write the modified spec and exec real runc with the original args.
@@ -57,7 +59,7 @@ virtualisation.docker.daemon.settings.runtimes.geesefs.path =
 
 Then `docker run --runtime=geesefs …`.
 
-## Scaffold status
+## Implementation status
 
 `geesefs-runc` is the `geesefs-runc` role of the single Go multi-call binary
 `geesefs-inject` (`cmd/geesefs-inject`, role logic in `internal/runc`; the Nix
@@ -66,14 +68,15 @@ implements the full runtime path: it parses the runc CLI (`internal/cli`), finds
 `config.json`, validates the policy annotations (`internal/policy`, failing
 closed on invalid untrusted input), and for a matched-and-valid container
 **mutates `config.json`** (`internal/ocispec`) to add the `/dev/fuse` device +
-cgroup rule, `CAP_SYS_ADMIN`, the mount target, and the `createRuntime` hook —
-then `exec`s the real `runc`. The mutation is pure, idempotent, and preserves
-every other spec field.
+cgroup rule, `CAP_SYS_ADMIN`, the mount target, the two RO bind mounts of the
+static [payload](./geesefs-payload.md), and the `createRuntime` + `poststop`
+hooks — then `exec`s the real `runc`. The mutation is pure, idempotent, and
+preserves every other spec field. The payload store paths come from the Nix
+wrapper via `GEESEFS_STATIC_BIN` / `GEESEFS_FUSERMOUNT3_BIN`; if either is
+missing the container fails closed rather than starting over an empty mount.
 
 The `createRuntime` hook runs `geesefs-hook`, which reads the OCI container
 state, asks `geesefsd` over its unix socket to establish the mount, and blocks
-until it is ready (fail-closed) — see
-[geesefsd-supervisor.md](./geesefsd-supervisor.md). Cleanup on container exit is
-Phase 5; the end-to-end path is exercised by
-[integration-test.md](./integration-test.md) (see the
-[implementation plan](./implementation-plan.md)).
+until it is ready (fail-closed); the symmetric `poststop` hook tears it down on
+exit — see [geesefsd-supervisor.md](./geesefsd-supervisor.md). The end-to-end
+path is exercised by [integration-test.md](./integration-test.md).

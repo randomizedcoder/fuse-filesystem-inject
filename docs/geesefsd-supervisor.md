@@ -35,10 +35,10 @@ supplied out-of-band, and cleanup is tied to container lifetime.
 
 ## Responsibilities
 
-- Locate/pull the requested `geesefs-oci` version (see
-  [geesefs-oci-image.md](./geesefs-oci-image.md)).
 - Obtain the container's namespace handles; `setns()` into its mount namespace.
-- Start GeeSFS and establish the mount; **verify readiness** before returning.
+- Start GeeSFS from the **static payload bind-mounted into the container** (see
+  [geesefs-payload.md](./geesefs-payload.md)) and establish the mount; **verify
+  readiness** before returning.
 - Supply S3 credentials securely (from a host secret store / workload identity —
   not from the app or GeeSFS image).
 - Monitor the GeeSFS process; collect logs/metrics.
@@ -56,21 +56,28 @@ The container id is the key linking runtime setup (from
 socket** (`/run/geesefsd.sock`, see `internal/contract`) and serves one mount
 request per connection:
 
-1. Read a `MountRequest` (`internal/protocol`) — container id, pid, and the
+1. Read a mount `Request` (`internal/protocol`) — container id, pid, and the
    validated policy — from the `createRuntime` hook.
 2. Re-validate the policy (`policy.Validate`) as defense in depth, since this is
    the privileged component doing the `setns()` + mount.
 3. If that id is already mounted, reply `READY` (idempotent). Otherwise launch
-   GeeSFS via `nsenter -t <pid> -m -- geesefs …` — entering the container's
-   **mount** namespace only, so the host network namespace (and thus the S3
-   endpoint) stays reachable — with S3 credentials taken from the daemon's
-   environment (never argv).
-4. Poll `findmnt` inside the container mount namespace until the `fuse.geesefs`
+   GeeSFS via `nsenter -t <pid> -m -- /.geesefs/bin/geesefs …` — entering the
+   container's **mount** namespace only (so the host network namespace, and thus
+   the S3 endpoint, stays reachable) and executing the static geesefs binary
+   bind-mounted into the container, with `PATH=/.geesefs/bin` so it finds the
+   static `fusermount3` alongside it. S3 credentials come from the daemon's
+   environment, never argv.
+4. Poll the container's mount table via `/proc/<pid>/mountinfo` (read from the
+   host — no helper binary needed inside the container) until the `fuse.geesefs`
    mount is live or a bounded timeout elapses (fail closed), record it keyed by
    container id, and reply `READY` / `FAILED`.
 
-The pure helpers (mount/findmnt argv construction, readiness parsing, the per-id
-registry, and the request-serving logic behind a `mounter` interface) are
-table-tested; the live `setns()` + GeeSFS mount is exercised by the integration
-test. Cleanup on container exit is Phase 5 — see the
-[implementation plan](./implementation-plan.md).
+On container exit the `poststop` hook sends an unmount request for the same id;
+geesefsd `SIGTERM`s GeeSFS (which unmounts the FUSE filesystem itself) and drops
+the state. Cleanup is idempotent, and each container's state is keyed by its own
+id so one container can never reach another's mount.
+
+The pure helpers (mount argv construction, the mount env, `mountinfo` readiness
+parsing, the per-id registry, and the request-serving logic behind a `mounter`
+interface) are table-tested; the live `setns()` + GeeSFS mount is exercised by
+the [integration test](./integration-test.md).

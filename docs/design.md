@@ -7,8 +7,9 @@ inside an otherwise **unmodified** Docker container, immediately before the
 container's normal application process starts.
 
 The motivating use case is [GeeSFS](https://github.com/yandex-cloud/geesefs), a
-FUSE-over-S3 filesystem packaged separately as a statically-oriented binary in an
-OCI image ([geesefs-oci](https://github.com/randomizedcoder/geesefs-oci)). The
+FUSE-over-S3 filesystem. Here it is built as a pair of **fully static binaries**
+(geesefs + its `fusermount3` helper) that are bind-mounted into the container as
+a self-contained payload — see [geesefs-payload.md](./geesefs-payload.md). The
 application container may be a third-party image (e.g. `pytorch/pytorch`) that is
 difficult or undesirable to rebuild, wrap, or otherwise modify.
 
@@ -72,7 +73,7 @@ keeping storage infrastructure and credentials outside arbitrary workloads.
 |---|-----------|-----|
 | 1 | MicroVM host environment (QEMU + Docker) | [microvm-host.md](./microvm-host.md) |
 | 2 | MinIO S3 fixture | [minio-s3.md](./minio-s3.md) |
-| 3 | GeeSFS OCI image (the injection payload) | [geesefs-oci-image.md](./geesefs-oci-image.md) |
+| 3 | GeeSFS static payload (the injection binaries) | [geesefs-payload.md](./geesefs-payload.md) |
 | 4 | `geesefs-runc` wrapper runtime | [geesefs-runc.md](./geesefs-runc.md) |
 | 5 | `geesefsd` host-side supervisor | [geesefsd-supervisor.md](./geesefsd-supervisor.md) |
 | 6 | Injection lifecycle | [injection-lifecycle.md](./injection-lifecycle.md) |
@@ -82,7 +83,7 @@ keeping storage infrastructure and credentials outside arbitrary workloads.
 
 ## Roadmap
 
-The path from the current scaffold to a working end-to-end injection is tracked in two docs:
+The phased path this implementation followed is tracked in two docs:
 
 | Doc | Purpose |
 |-----|---------|
@@ -123,9 +124,12 @@ and `/models` contains the configured S3 bucket.
 
 ## Status
 
-This repository is a **scaffold**: the docs describe the full design, the Nix
-modules stand up the microVM + Docker + MinIO + the injection wiring, and the
-integration test encodes the target contract. `geesefs-runc` and `geesefsd` are
-currently faithful **stubs** (pass-through + logged intentions); the actual
-`config.json` mutation and `setns()` mount are the next implementation pass. See
-[integration-test.md](./integration-test.md) for exactly what passes today.
+**Implemented and passing end-to-end.** `geesefs-runc` mutates the OCI
+`config.json` (device + caps + the RO-bind-mounted static
+[payload](./geesefs-payload.md) + `createRuntime`/`poststop` hooks) and
+`geesefsd` performs the real `setns()` mount and cleanup. `nix run
+.#integration-test` boots the VM, injects into an unmodified PyTorch container,
+runs `python /models/hello.py` from S3 over the FUSE mount, and asserts the
+isolation / escape properties. See [integration-test.md](./integration-test.md)
+for exactly what is asserted and [implementation-status.md](./implementation-status.md)
+for the per-phase record.

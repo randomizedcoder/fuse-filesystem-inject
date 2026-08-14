@@ -4,10 +4,14 @@
 # NixOS modules, the stub binaries, the scripts, and the checks all read their
 # package attrs from here so they can never drift. Everything is a plain
 # passthrough to nixpkgs (the nixpkgs input in flake.lock is the pin), except
-# `geesefs` / `oci-geesefs`, which come from the geesefs-oci flake input.
+# the GeeSFS payload (`geesefsStatic` / `fusermount3Static`), which is built
+# locally from nixpkgs in ./geesefs.
 #
-{ pkgs, geesefsPkgs }:
+{ pkgs }:
 
+let
+  geesefsPayload = import ./geesefs { inherit pkgs; };
+in
 {
   # Container runtime that runs inside the VM.
   docker = pkgs.docker;
@@ -17,9 +21,6 @@
   # S3 fixture + client.
   minio = pkgs.minio;
   minio-client = pkgs.minio-client;
-
-  # FUSE userspace: geesefs shells out to `fusermount3` at mount time.
-  fuse3 = pkgs.fuse3;
 
   # Namespace entry for the host-side supervisor (nsenter/unshare live here).
   util-linux = pkgs.util-linux;
@@ -40,9 +41,12 @@
   skopeo = pkgs.skopeo;
   awscli2 = pkgs.awscli2;
 
-  # From the geesefs-oci flake input: the FUSE-over-S3 binary and its OCI image.
-  geesefs = geesefsPkgs.geesefs;
-  oci-geesefs = geesefsPkgs.oci-geesefs;
+  # The GeeSFS injection payload (see ./geesefs): a fully static geesefs binary
+  # and its static `fusermount3` helper. geesefs-runc RO bind-mounts both into
+  # an opted-in container so the mount tooling is entirely self-contained and
+  # never reaches back out to the host closure at runtime.
+  geesefsStatic = geesefsPayload.geesefs-static;
+  fusermount3Static = geesefsPayload.fusermount3-static;
 
   # Go toolchain for the geesefs-inject multi-call binary (geesefs-runc /
   # geesefsd / geesefs-hook) and its unit-test / lint checks. The go.mod `go`

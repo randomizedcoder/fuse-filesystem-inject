@@ -4,7 +4,9 @@
 //   - the /dev/fuse device and its device-cgroup allow rule,
 //   - CAP_SYS_ADMIN in the bounding/effective/permitted sets,
 //   - a mount target directory (a small tmpfs at the mount path, so the
-//     directory reliably exists for geesefsd to mount over), and
+//     directory reliably exists for geesefsd to mount over),
+//   - read-only bind mounts of the static geesefs + fusermount3 binaries into
+//     the container (so the mount tooling is self-contained — see Payload), and
 //   - a createRuntime hook (to establish the mount) and a matching poststop
 //     hook (to reap it), both running geesefs-hook.
 //
@@ -33,11 +35,20 @@ const capSysAdmin = "CAP_SYS_ADMIN"
 // are intentionally excluded — the app process does not need to pass it on.
 var capabilitySets = []string{"bounding", "effective", "permitted"}
 
+// Payload holds the host paths of the static GeeSFS binaries that geesefs-runc
+// RO bind-mounts into the container. They are the injected mount tooling; the
+// container execs them (via geesefsd) instead of anything from the host closure.
+type Payload struct {
+	Geesefs     string
+	Fusermount3 string
+}
+
 // Mutate applies the GeeSFS injection for pol to the OCI spec in specJSON and
 // returns the modified spec. hookPath is the absolute path to the geesefs-hook
-// binary runc will invoke. The output is deterministic (sorted keys), so it is
-// stable across runs and idempotent under re-application.
-func Mutate(specJSON []byte, pol policy.Policy, hookPath string) ([]byte, error) {
+// binary runc will invoke; payload gives the host paths of the static binaries
+// to bind-mount in. The output is deterministic (sorted keys), so it is stable
+// across runs and idempotent under re-application.
+func Mutate(specJSON []byte, pol policy.Policy, hookPath string, payload Payload) ([]byte, error) {
 	dec := json.NewDecoder(bytes.NewReader(specJSON))
 	dec.UseNumber() // keep numbers exact; avoids float64 round-tripping
 
@@ -53,6 +64,8 @@ func Mutate(specJSON []byte, pol policy.Policy, hookPath string) ([]byte, error)
 	addDeviceCgroupRule(root)
 	addCapability(root, capSysAdmin)
 	addMountTarget(root, pol.Mount)
+	addBindMount(root, contract.PayloadGeesefs, payload.Geesefs)
+	addBindMount(root, contract.PayloadFusermount3, payload.Fusermount3)
 	addHook(root, "createRuntime", hookPath, mountHookArgs(pol))
 	addHook(root, "poststop", hookPath, unmountHookArgs())
 
@@ -117,20 +130,41 @@ func addCapability(root map[string]any, capName string) {
 // addMountTarget ensures the mount path exists in the rootfs by adding a small
 // tmpfs mount there; geesefsd later mounts GeeSFS over it.
 func addMountTarget(root map[string]any, mount string) {
-	mounts, _ := root["mounts"].([]any)
-	for _, m := range mounts {
-		if mm, ok := m.(map[string]any); ok {
-			if d, _ := mm["destination"].(string); d == mount {
-				return
-			}
-		}
-	}
-	root["mounts"] = append(mounts, map[string]any{
+	addMount(root, map[string]any{
 		"destination": mount,
 		"type":        "tmpfs",
 		"source":      "tmpfs",
 		"options":     []any{"nosuid", "nodev", "mode=755"},
 	})
+}
+
+// addBindMount RO bind-mounts a single host file into the container at dest.
+// This is how the static GeeSFS payload reaches the container without pulling
+// in the host's /nix closure; the source is a dependency-free static binary and
+// nosuid/nodev harden the mount (we exec it as container-root + CAP_SYS_ADMIN,
+// so it never needs setuid).
+func addBindMount(root map[string]any, dest, source string) {
+	addMount(root, map[string]any{
+		"destination": dest,
+		"type":        "bind",
+		"source":      source,
+		"options":     []any{"bind", "ro", "nosuid", "nodev"},
+	})
+}
+
+// addMount appends a mount entry unless one with the same destination already
+// exists (idempotent). mount must carry a string "destination".
+func addMount(root map[string]any, mount map[string]any) {
+	dest, _ := mount["destination"].(string)
+	mounts, _ := root["mounts"].([]any)
+	for _, m := range mounts {
+		if mm, ok := m.(map[string]any); ok {
+			if d, _ := mm["destination"].(string); d == dest {
+				return
+			}
+		}
+	}
+	root["mounts"] = append(mounts, mount)
 }
 
 // mountHookArgs is the argv for the createRuntime hook: the role (argv[0], which

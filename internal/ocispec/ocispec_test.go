@@ -8,16 +8,26 @@ import (
 	"github.com/randomizedcoder/fuse-filesystem-inject/internal/policy"
 )
 
-const hookPath = "/nix/store/xxxx-geesefs-inject/bin/geesefs-hook"
+const (
+	hookPath        = "/nix/store/xxxx-geesefs-inject/bin/geesefs-hook"
+	geesefsBin      = "/nix/store/aaaa-geesefs/bin/geesefs"
+	fusermount3Bin  = "/nix/store/bbbb-fusermount3/bin/fusermount3"
+	payloadGeesefs  = "/.geesefs/bin/geesefs"
+	payloadFusermnt = "/.geesefs/bin/fusermount3"
+)
 
 func testPolicy() policy.Policy {
 	return policy.Policy{Bucket: "models", Mount: "/models", Endpoint: "http://127.0.0.1:9000"}
 }
 
+func testPayload() Payload {
+	return Payload{Geesefs: geesefsBin, Fusermount3: fusermount3Bin}
+}
+
 // mutate is a test helper that fails on error.
 func mutate(t *testing.T, in string) map[string]any {
 	t.Helper()
-	out, err := Mutate([]byte(in), testPolicy(), hookPath)
+	out, err := Mutate([]byte(in), testPolicy(), hookPath, testPayload())
 	if err != nil {
 		t.Fatalf("Mutate returned error: %v", err)
 	}
@@ -56,6 +66,10 @@ func TestMutate_AddsAllFields(t *testing.T) {
 		t.Errorf("mounts missing destination /models: %v", m["mounts"])
 	}
 
+	// static payload RO bind-mounted into the container.
+	checkBindMount(t, m["mounts"].([]any), payloadGeesefs, geesefsBin)
+	checkBindMount(t, m["mounts"].([]any), payloadFusermnt, fusermount3Bin)
+
 	// createRuntime hook registered with our path + "mount" + policy args.
 	checkHook(t, m, "createRuntime",
 		[]any{"geesefs-hook", "mount", "models", "/models", "http://127.0.0.1:9000"})
@@ -85,11 +99,11 @@ func TestMutate_Idempotent(t *testing.T) {
 
 	for _, tc := range inputs {
 		t.Run(tc.name, func(t *testing.T) {
-			out1, err := Mutate([]byte(tc.spec), testPolicy(), hookPath)
+			out1, err := Mutate([]byte(tc.spec), testPolicy(), hookPath, testPayload())
 			if err != nil {
 				t.Fatalf("first Mutate: %v", err)
 			}
-			out2, err := Mutate(out1, testPolicy(), hookPath)
+			out2, err := Mutate(out1, testPolicy(), hookPath, testPayload())
 			if err != nil {
 				t.Fatalf("second Mutate: %v", err)
 			}
@@ -106,7 +120,9 @@ func TestMutate_NoDuplicates(t *testing.T) {
 	  "process":{"capabilities":{"bounding":["CAP_SYS_ADMIN"],"effective":["CAP_SYS_ADMIN"],"permitted":["CAP_SYS_ADMIN"]}},
 	  "linux":{"devices":[{"type":"c","path":"/dev/fuse","major":10,"minor":229}],
 	           "resources":{"devices":[{"allow":true,"type":"c","major":10,"minor":229,"access":"rwm"}]}},
-	  "mounts":[{"destination":"/models","type":"tmpfs","source":"tmpfs"}],
+	  "mounts":[{"destination":"/models","type":"tmpfs","source":"tmpfs"},
+	            {"destination":"` + payloadGeesefs + `","type":"bind","source":"` + geesefsBin + `","options":["bind","ro","nosuid","nodev"]},
+	            {"destination":"` + payloadFusermnt + `","type":"bind","source":"` + fusermount3Bin + `","options":["bind","ro","nosuid","nodev"]}],
 	  "hooks":{"createRuntime":[{"path":"` + hookPath + `","args":["geesefs-hook","mount","models","/models","http://127.0.0.1:9000"]}],
 	           "poststop":[{"path":"` + hookPath + `","args":["geesefs-hook","unmount"]}]}
 	}`
@@ -127,6 +143,12 @@ func TestMutate_NoDuplicates(t *testing.T) {
 	if n := countMountDest(m["mounts"].([]any), "/models"); n != 1 {
 		t.Errorf("/models mount count = %d, want 1", n)
 	}
+	if n := countMountDest(m["mounts"].([]any), payloadGeesefs); n != 1 {
+		t.Errorf("%s bind mount count = %d, want 1", payloadGeesefs, n)
+	}
+	if n := countMountDest(m["mounts"].([]any), payloadFusermnt); n != 1 {
+		t.Errorf("%s bind mount count = %d, want 1", payloadFusermnt, n)
+	}
 }
 
 func TestMutate_Errors(t *testing.T) {
@@ -139,7 +161,7 @@ func TestMutate_Errors(t *testing.T) {
 		{"json null", `null`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := Mutate([]byte(tc.spec), testPolicy(), hookPath); err == nil {
+			if _, err := Mutate([]byte(tc.spec), testPolicy(), hookPath, testPayload()); err == nil {
 				t.Errorf("Mutate(%q) = nil error, want error", tc.spec)
 			}
 		})
@@ -185,6 +207,43 @@ func checkHook(t *testing.T, m map[string]any, name string, wantArgs []any) {
 			t.Errorf("%s hook args[%d] = %v, want %v", name, i, args[i], wantArgs[i])
 		}
 	}
+}
+
+// checkBindMount asserts mounts holds exactly one RO bind mount at dest from
+// source, hardened with nosuid/nodev.
+func checkBindMount(t *testing.T, mounts []any, dest, source string) {
+	t.Helper()
+	if n := countMountDest(mounts, dest); n != 1 {
+		t.Fatalf("bind mount at %s count = %d, want 1", dest, n)
+	}
+	for _, m := range mounts {
+		mm, ok := m.(map[string]any)
+		if !ok || mm["destination"] != dest {
+			continue
+		}
+		if mm["source"] != source {
+			t.Errorf("%s source = %v, want %v", dest, mm["source"], source)
+		}
+		if mm["type"] != "bind" {
+			t.Errorf("%s type = %v, want bind", dest, mm["type"])
+		}
+		opts, _ := mm["options"].([]any)
+		for _, want := range []string{"bind", "ro", "nosuid", "nodev"} {
+			if !containsString(opts, want) {
+				t.Errorf("%s options %v missing %q", dest, opts, want)
+			}
+		}
+		return
+	}
+}
+
+func containsString(arr []any, s string) bool {
+	for _, e := range arr {
+		if e == s {
+			return true
+		}
+	}
+	return false
 }
 
 func hasDeviceWithPath(devices []any, path string) bool {

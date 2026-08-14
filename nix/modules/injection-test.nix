@@ -16,10 +16,9 @@
 #   5. Isolation: the VM-host marker is unreachable, `../../` from the mount
 #      cannot escape the container rootfs, and /proc is the container's own.
 #
-# SCAFFOLD NOTE: geesefs-runc/geesefsd are stubs this pass, so injection does
-# not actually happen yet — the test is expected to FAIL at step 2/3 until they
-# are implemented. It encodes the target contract. That is why the host driver
-# exposes it as an app, not a must-pass `nix flake check` gate.
+# The injection is fully implemented and this test passes end-to-end. It stays
+# an app (not a `nix flake check` gate) only because it needs KVM + network to
+# boot the VM and pull the PyTorch image — see the host driver in ../tests.
 #
 # See ../../docs/integration-test.md and ../../docs/injection-lifecycle.md.
 #

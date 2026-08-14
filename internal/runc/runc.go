@@ -124,7 +124,13 @@ func handleCreate(bundle string) (exitCode int, abort bool) {
 		return 1, true
 	}
 
-	mutated, err := ocispec.Mutate(data, pol, hookPath)
+	payload, err := resolvePayload()
+	if err != nil {
+		logf("FATAL: refusing to start container: %v", err)
+		return 1, true
+	}
+
+	mutated, err := ocispec.Mutate(data, pol, hookPath, payload)
 	if err != nil {
 		logf("FATAL: refusing to start container: mutating %s: %v", configPath, err)
 		return 1, true
@@ -142,8 +148,8 @@ func handleCreate(bundle string) (exitCode int, abort bool) {
 
 	logf("GeeSFS injection applied to %s (bucket=%s mount=%s endpoint=%s)",
 		configPath, pol.Bucket, pol.Mount, pol.Endpoint)
-	logf("  added: %s device + cgroup rule c %d:%d rwm, CAP_SYS_ADMIN, mount target %s, createRuntime + poststop hooks",
-		contract.FuseDevicePath, contract.FuseDeviceMajor, contract.FuseDeviceMinor, pol.Mount)
+	logf("  added: %s device + cgroup rule c %d:%d rwm, CAP_SYS_ADMIN, mount target %s, static payload -> %s, createRuntime + poststop hooks",
+		contract.FuseDevicePath, contract.FuseDeviceMajor, contract.FuseDeviceMinor, pol.Mount, contract.PayloadDir)
 	return 0, false
 }
 
@@ -160,6 +166,22 @@ func resolveHookPath() (string, error) {
 			contract.RoleHook, hookPathEnv, err)
 	}
 	return p, nil
+}
+
+// resolvePayload returns the host paths of the static GeeSFS binaries to bind
+// mount into the container. The Nix wrapper sets these (see mkGoBinary.nix);
+// without them the injected mount could not run, so a matched container fails
+// closed rather than starting over an empty mount point.
+func resolvePayload() (ocispec.Payload, error) {
+	geesefs := os.Getenv(contract.EnvGeesefsBin)
+	if geesefs == "" {
+		return ocispec.Payload{}, fmt.Errorf("static geesefs path unset (%s)", contract.EnvGeesefsBin)
+	}
+	fusermount3 := os.Getenv(contract.EnvFusermount3Bin)
+	if fusermount3 == "" {
+		return ocispec.Payload{}, fmt.Errorf("static fusermount3 path unset (%s)", contract.EnvFusermount3Bin)
+	}
+	return ocispec.Payload{Geesefs: geesefs, Fusermount3: fusermount3}, nil
 }
 
 // execRunc replaces this process with the real runc, preserving the original

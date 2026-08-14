@@ -48,17 +48,18 @@ image launch stays clean.
 nix run .#integration-test
 ```
 
-## Scaffold status — what passes today
+## Status — it passes end-to-end
 
-`geesefs-runc` and `geesefsd` are stubs this pass, so **injection does not
-actually happen yet**: the container starts without the mount, and the test
-**fails at step 3/4** with a clear message. This is expected and intended — the
-test encodes the *target* contract. For that reason it is exposed as an app, not
-wired into `nix flake check`'s must-pass gates.
+The injection is fully implemented and the test **passes end-to-end**:
+`geesefs-runc` mutates `config.json` ([geesefs-runc.md](./geesefs-runc.md)) and
+`geesefsd` performs the real `setns()` mount
+([geesefsd-supervisor.md](./geesefsd-supervisor.md)), so the container gets a
+live `fuse.geesefs` mount at `/models` and `python /models/hello.py` runs from
+S3. The driver prints `GEESEFS-INJECTION-TEST: SUCCESS`.
 
-What **does** pass now: `nix flake check` (evaluation + `nixfmt --check` + a
-`geesefs --version` smoke + a `geesefs-runc --geesefs-selftest` smoke), building
-the VM runner, and booting the VM through Phase 2. Implementing the
-`config.json` mutation ([geesefs-runc.md](./geesefs-runc.md)) and the `setns()`
-mount ([geesefsd-supervisor.md](./geesefsd-supervisor.md)) is what flips steps
-3–6 green.
+It stays an **app** rather than a `nix flake check` gate because it needs KVM to
+boot the VM and network access to pull the PyTorch image — neither is available
+inside the `nix build` sandbox. The pure logic (policy validation, `config.json`
+mutation, mount-argv / readiness parsing, the socket codec) *is* gated by
+`nix flake check` via the Go unit checks, alongside `nixfmt --check` and the
+static-payload / selftest smokes.

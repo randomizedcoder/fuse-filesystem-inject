@@ -44,3 +44,23 @@ const (
 	// SocketEnv overrides SupervisorSocket for both ends (used by tests).
 	SocketEnv = "GEESEFS_SOCKET"
 )
+
+// Injected payload. geesefs-runc RO bind-mounts the two static GeeSFS binaries
+// into the opted-in container at these fixed paths, and geesefsd execs them
+// there (never the host copies) — the container is self-contained, so the mount
+// tooling never reaches back out to the host's /nix closure. Both live under
+// one directory so geesefsd can point PATH at it and geesefs finds fusermount3.
+const (
+	PayloadDir         = "/.geesefs/bin"
+	PayloadGeesefs     = PayloadDir + "/geesefs"
+	PayloadFusermount3 = PayloadDir + "/fusermount3"
+)
+
+// Env vars the Nix wrapper sets on geesefs-runc, giving it the host store paths
+// of the static payload binaries to use as bind-mount sources. They cannot be
+// derived from os.Executable() (that resolves to the unwrapped store path), so
+// the wrapper injects them — the same pattern as GEESEFS_HOOK_PATH.
+const (
+	EnvGeesefsBin     = "GEESEFS_STATIC_BIN"
+	EnvFusermount3Bin = "GEESEFS_FUSERMOUNT3_BIN"
+)

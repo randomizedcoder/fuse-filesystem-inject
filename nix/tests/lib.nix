@@ -54,6 +54,8 @@ in
       fail() { echo -e "  ''${RED}FAIL: $1''${NC}"; exit 1; }
       info() { echo -e "  ''${YELLOW}INFO: $1''${NC}"; }
 
+      # Invoked indirectly via `trap cleanup EXIT` below; SC2329 can't see that.
+      # shellcheck disable=SC2329
       cleanup() {
         echo ""
         info "Cleaning up VM..."
