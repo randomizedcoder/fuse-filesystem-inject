@@ -166,11 +166,13 @@ another's mount or credentials.
 
 ## Testing strategy
 
-- **Unit (Go, table-driven), run as Nix checks** — the pure logic: policy validation
-  (`test-go-policy`), spec mutation (`test-go-ocispec`), and the mount-arg / readiness / codec
-  helpers. Each check copies the module source into the sandbox and runs `go test` offline
-  (`GOPROXY=off`; the module is stdlib-only so no vendor tree is needed — see the `goCheck`
-  helper in `nix/default.nix`). Binaries build with `doCheck = false`.
+- **Unit (Go, table-driven), run as a Nix check** — the pure logic: policy validation, spec
+  mutation, and the mount-arg / readiness / codec helpers. A single `go-test` check copies the
+  module source into the sandbox and runs `go test ./...` offline (`GOPROXY=off`; the module is
+  stdlib-only so no vendor tree is needed — see the `goCheck` helper in `nix/default.nix`).
+  One whole-module check gates every package's table tests, so per-package checks
+  (`test-go-policy`, `test-go-ocispec`) would be redundant. Binaries build with
+  `doCheck = false`.
 - **Lint / format gates** — `nixfmt-check` (exists) plus new `gofmt`, `go-vet`,
   `golangci-lint`.
 - **Integration (in-guest, sentinel) — mechanism unchanged** — the existing

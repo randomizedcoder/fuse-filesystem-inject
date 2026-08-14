@@ -13,7 +13,7 @@ phase's status or a definition-of-done item flips** — it is the single place t
 | Phase | Scope | Status | Tests | Notes |
 |-------|-------|--------|-------|-------|
 | 1 | Go module scaffold + Nix build wiring (behavior-preserving) | ☑ | `internal/cli` arg-parse table (+ `go-test`/`go-vet`/`gofmt`/`contract-parity` checks) | done — Go multi-call binary; no behavior change; microVM still builds |
-| 2 | Policy parse + untrusted-annotation validation | ☐ | `test-go-policy` | fail-closed on invalid input |
+| 2 | Policy parse + untrusted-annotation validation | ☑ | `internal/policy` table (25 cases) via `go-test` | done — fail-closed wired into geesefs-runc create |
 | 3 | `geesefs-runc` `config.json` (OCI spec) mutation | ☐ | `test-go-ocispec` (+ golden) | switch hook to `createRuntime` |
 | 4 | Hook + `geesefsd` mount (setns + mount-before-app) | ☐ | argv / readiness / codec tables | first pass where the mount goes live |
 | 5 | Cleanup lifecycle + cross-container isolation | ☐ | cleanup-keying table | no leftover host mount; per-id isolation |
@@ -32,14 +32,14 @@ phase's status or a definition-of-done item flips** — it is the single place t
 - [x] `internal/cli` arg-parse table test (11 cases incl. docker-style global value flags)
 - [x] review gate: `nixfmt-check` + `gofmt` + `go-vet` + `go-test` + `contract-parity` all clean (`nix flake check` → all checks passed)
 
-### Phase 2 — Policy parse + untrusted-annotation validation
-- [ ] `internal/policy`: annotations → typed `Policy{Enabled,Bucket,Mount,Endpoint}`
-- [ ] validate mount path (absolute, `path.Clean`, no `..`/escape)
-- [ ] validate bucket charset + endpoint scheme/host allowlist
-- [ ] invalid input fails closed; unmatched passes through
-- [ ] table-driven tests incl. adversarial cases (`../`, relative, `/`, `/proc`, empty, over-long, bad scheme)
-- [ ] Nix check `test-go-policy`
-- [ ] review gate
+### Phase 2 — Policy parse + untrusted-annotation validation  ✅
+- [x] `internal/policy`: annotations → typed `Policy{Bucket,Mount,Endpoint}` with `Parse` returning `(Policy, matched, err)`
+- [x] validate mount path (absolute, `path.Clean(m)==m`, not `/`, no `..`/escape)
+- [x] validate bucket charset (DNS-style regex, no shell/path metachars) + endpoint scheme allowlist (http/https), host required, no credentials/path/query
+- [x] invalid input fails closed in `geesefs-runc` create (exit 1, no `exec runc`); unmatched passes through
+- [x] table-driven tests incl. adversarial cases (`../`, relative, `/`, trailing slash, doubled sep, shell metachars, bad/missing scheme, embedded creds)
+- [x] ~~Nix check `test-go-policy`~~ **covered by `go-test`** (`go test ./...` runs the policy table — a dedicated per-package check would be redundant)
+- [x] review gate: `nix flake check` → all checks passed
 
 ### Phase 3 — `geesefs-runc` config.json mutation
 - [ ] `internal/ocispec`: add `/dev/fuse` device + cgroup rule `c 10:229 rwm`

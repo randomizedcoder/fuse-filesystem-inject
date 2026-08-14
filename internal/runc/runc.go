@@ -21,6 +21,7 @@ import (
 
 	"github.com/randomizedcoder/fuse-filesystem-inject/internal/cli"
 	"github.com/randomizedcoder/fuse-filesystem-inject/internal/contract"
+	"github.com/randomizedcoder/fuse-filesystem-inject/internal/policy"
 )
 
 // selftestFlag is a build-time smoke used by the Nix `geesefs-runc-smoke`
@@ -50,7 +51,11 @@ func Run(args []string) int {
 
 	inv := cli.ParseRunc(args)
 	if inv.Subcommand == "create" {
-		inspectBundle(inv.Bundle)
+		if code, abort := handleCreate(inv.Bundle); abort {
+			// Fail closed: an opted-in container is misconfigured, so we
+			// refuse to create it rather than exec runc.
+			return code
+		}
 	}
 
 	return execRunc(args)
@@ -66,10 +71,15 @@ func selftest() int {
 	return 0
 }
 
-// inspectBundle reads the bundle's config.json and logs the injection decision.
-// It never fails the container: any problem reading or parsing the spec falls
-// back to a plain pass-through (the exec of the real runc still happens).
-func inspectBundle(bundle string) {
+// handleCreate reads the bundle's config.json and evaluates the injection
+// policy. It returns (exitCode, abort): when abort is true the caller must NOT
+// exec runc — the container opted in but its policy is invalid, so we fail
+// closed. When abort is false, execution proceeds to exec runc normally
+// (pass-through, or a matched-and-valid container that Phase 3 will mutate).
+//
+// Problems reading or parsing the spec are NOT our failure to own: we pass
+// through and let the real runc report them.
+func handleCreate(bundle string) (exitCode int, abort bool) {
 	if bundle == "" {
 		if cwd, err := os.Getwd(); err == nil {
 			bundle = cwd
@@ -80,7 +90,7 @@ func inspectBundle(bundle string) {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		logf("no readable config.json at %s (pass-through): %v", configPath, err)
-		return
+		return 0, false
 	}
 
 	var spec struct {
@@ -88,28 +98,30 @@ func inspectBundle(bundle string) {
 	}
 	if err := json.Unmarshal(data, &spec); err != nil {
 		logf("config.json at %s is not valid JSON (pass-through): %v", configPath, err)
-		return
+		return 0, false
 	}
 
-	if spec.Annotations[contract.AnnEnabled] != "true" {
+	pol, matched, err := policy.Parse(spec.Annotations)
+	if err != nil {
+		logf("FATAL: refusing to start container: invalid GeeSFS policy: %v", err)
+		return 1, true
+	}
+	if !matched {
 		logf("no GeeSFS policy for bundle=%s (pass-through)", bundle)
-		return
+		return 0, false
 	}
-
-	bucket := spec.Annotations[contract.AnnBucket]
-	mount := spec.Annotations[contract.AnnMount]
-	endpoint := spec.Annotations[contract.AnnEndpoint]
 
 	logf("GeeSFS injection MATCHED for bundle=%s", bundle)
-	logf("  bucket=%s mount=%s endpoint=%s", bucket, mount, endpoint)
+	logf("  bucket=%s mount=%s endpoint=%s", pol.Bucket, pol.Mount, pol.Endpoint)
 	logf("  WOULD mutate %s to add:", configPath)
 	logf("    - device %s (+ device-cgroup rule c %d:%d rwm)",
 		contract.FuseDevicePath, contract.FuseDeviceMajor, contract.FuseDeviceMinor)
 	logf("    - capability CAP_SYS_ADMIN (bounding/effective/permitted)")
-	logf("    - mount target dir %s in the rootfs", mount)
+	logf("    - mount target dir %s in the rootfs", pol.Mount)
 	logf("    - createRuntime hook -> geesefsd mount <id> <bucket> <mount> <endpoint>")
 	logf("  STUB: config.json mutation is deferred to Phase 3; the container")
 	logf("        will start WITHOUT the mount until then.")
+	return 0, false
 }
 
 // execRunc replaces this process with the real runc, preserving the original
