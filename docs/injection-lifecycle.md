@@ -5,11 +5,15 @@
 This describes exactly *when* the mount is established relative to the
 application process, and what happens on failure.
 
-## The startContainer point
+## The createRuntime hook point
 
-The OCI runtime lifecycle includes a `startContainer` hook that fires **after**
-the container environment and namespaces are created but **before** the
-user-specified application process starts — precisely the point we need.
+The OCI runtime lifecycle includes a `createRuntime` hook that fires **after**
+the container namespaces are created but **before** the user-specified
+application process starts — precisely the point we need. Crucially it runs in
+the **runtime (host) namespace**, not the container's, which is exactly where a
+host-side `setns()` supervisor must act. (An earlier draft named the
+`startContainer` hook, but that one executes *inside* the container namespace
+just before `execve`, so it cannot perform the host-side setns mount.)
 
 ```
 container created
@@ -18,7 +22,8 @@ container created
 mount namespace ready
       |
       v
-startContainer hook (geesefs-runc installs it; it calls geesefsd)
+createRuntime hook (geesefs-runc installs it; it runs geesefs-hook,
+                    which asks geesefsd to establish the mount)
       |
       +-- geesefsd starts GeeSFS
       |

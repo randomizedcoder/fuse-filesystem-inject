@@ -21,8 +21,15 @@ import (
 
 	"github.com/randomizedcoder/fuse-filesystem-inject/internal/cli"
 	"github.com/randomizedcoder/fuse-filesystem-inject/internal/contract"
+	"github.com/randomizedcoder/fuse-filesystem-inject/internal/ocispec"
 	"github.com/randomizedcoder/fuse-filesystem-inject/internal/policy"
 )
+
+// hookPathEnv is set by the Nix wrapper to the absolute path of the
+// geesefs-hook binary (its sibling in the wrapper's bin/). We cannot derive it
+// from os.Executable(), which resolves to the unwrapped binary in a different
+// store path.
+const hookPathEnv = "GEESEFS_HOOK_PATH"
 
 // selftestFlag is a build-time smoke used by the Nix `geesefs-runc-smoke`
 // check to prove the wrapper parses and can locate the real runc.
@@ -111,17 +118,48 @@ func handleCreate(bundle string) (exitCode int, abort bool) {
 		return 0, false
 	}
 
-	logf("GeeSFS injection MATCHED for bundle=%s", bundle)
-	logf("  bucket=%s mount=%s endpoint=%s", pol.Bucket, pol.Mount, pol.Endpoint)
-	logf("  WOULD mutate %s to add:", configPath)
-	logf("    - device %s (+ device-cgroup rule c %d:%d rwm)",
-		contract.FuseDevicePath, contract.FuseDeviceMajor, contract.FuseDeviceMinor)
-	logf("    - capability CAP_SYS_ADMIN (bounding/effective/permitted)")
-	logf("    - mount target dir %s in the rootfs", pol.Mount)
-	logf("    - createRuntime hook -> geesefsd mount <id> <bucket> <mount> <endpoint>")
-	logf("  STUB: config.json mutation is deferred to Phase 3; the container")
-	logf("        will start WITHOUT the mount until then.")
+	hookPath, err := resolveHookPath()
+	if err != nil {
+		logf("FATAL: refusing to start container: %v", err)
+		return 1, true
+	}
+
+	mutated, err := ocispec.Mutate(data, pol, hookPath)
+	if err != nil {
+		logf("FATAL: refusing to start container: mutating %s: %v", configPath, err)
+		return 1, true
+	}
+
+	// Preserve the original file mode; fall back to 0644 if it can't be read.
+	mode := os.FileMode(0o644)
+	if info, statErr := os.Stat(configPath); statErr == nil {
+		mode = info.Mode().Perm()
+	}
+	if err := os.WriteFile(configPath, mutated, mode); err != nil {
+		logf("FATAL: refusing to start container: writing %s: %v", configPath, err)
+		return 1, true
+	}
+
+	logf("GeeSFS injection applied to %s (bucket=%s mount=%s endpoint=%s)",
+		configPath, pol.Bucket, pol.Mount, pol.Endpoint)
+	logf("  added: %s device + cgroup rule c %d:%d rwm, CAP_SYS_ADMIN, mount target %s, createRuntime hook",
+		contract.FuseDevicePath, contract.FuseDeviceMajor, contract.FuseDeviceMinor, pol.Mount)
 	return 0, false
+}
+
+// resolveHookPath returns the absolute path to the geesefs-hook binary. It
+// prefers the value the Nix wrapper sets (GEESEFS_HOOK_PATH) and otherwise
+// falls back to a PATH lookup.
+func resolveHookPath() (string, error) {
+	if p := os.Getenv(hookPathEnv); p != "" {
+		return p, nil
+	}
+	p, err := exec.LookPath(contract.RoleHook)
+	if err != nil {
+		return "", fmt.Errorf("cannot locate %s (set %s or put it on PATH): %w",
+			contract.RoleHook, hookPathEnv, err)
+	}
+	return p, nil
 }
 
 // execRunc replaces this process with the real runc, preserving the original

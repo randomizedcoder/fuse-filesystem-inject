@@ -14,7 +14,7 @@ phase's status or a definition-of-done item flips** — it is the single place t
 |-------|-------|--------|-------|-------|
 | 1 | Go module scaffold + Nix build wiring (behavior-preserving) | ☑ | `internal/cli` arg-parse table (+ `go-test`/`go-vet`/`gofmt`/`contract-parity` checks) | done — Go multi-call binary; no behavior change; microVM still builds |
 | 2 | Policy parse + untrusted-annotation validation | ☑ | `internal/policy` table (25 cases) via `go-test` | done — fail-closed wired into geesefs-runc create |
-| 3 | `geesefs-runc` `config.json` (OCI spec) mutation | ☐ | `test-go-ocispec` (+ golden) | switch hook to `createRuntime` |
+| 3 | `geesefs-runc` `config.json` (OCI spec) mutation | ☑ | `internal/ocispec` table + idempotency via `go-test` | done — real mutation wired; hook switched to `createRuntime` |
 | 4 | Hook + `geesefsd` mount (setns + mount-before-app) | ☐ | argv / readiness / codec tables | first pass where the mount goes live |
 | 5 | Cleanup lifecycle + cross-container isolation | ☐ | cleanup-keying table | no leftover host mount; per-id isolation |
 | 6 | Full E2E green + CI wiring + final review | ☐ | all unit + lint checks | integration test prints SUCCESS |
@@ -41,16 +41,17 @@ phase's status or a definition-of-done item flips** — it is the single place t
 - [x] ~~Nix check `test-go-policy`~~ **covered by `go-test`** (`go test ./...` runs the policy table — a dedicated per-package check would be redundant)
 - [x] review gate: `nix flake check` → all checks passed
 
-### Phase 3 — `geesefs-runc` config.json mutation
-- [ ] `internal/ocispec`: add `/dev/fuse` device + cgroup rule `c 10:229 rwm`
-- [ ] add `CAP_SYS_ADMIN` (bounding/effective/permitted)
-- [ ] add mount-target dir + hook registration
-- [ ] idempotent; unmatched → byte-identical spec
-- [ ] hook type is `createRuntime` (not `startContainer`); docs updated
-- [ ] matched `create` writes spec then `exec runc`
-- [ ] table-driven + golden before/after tests; malformed spec → error
-- [ ] Nix check `test-go-ocispec`
-- [ ] review gate
+### Phase 3 — `geesefs-runc` config.json mutation  ✅
+- [x] `internal/ocispec`: add `/dev/fuse` device + cgroup rule `c 10:229 rwm`
+- [x] add `CAP_SYS_ADMIN` (bounding/effective/permitted)
+- [x] add mount-target dir (tmpfs) + `createRuntime` hook registration (argv0 + policy args)
+- [x] idempotent (map[string]any round-trip, sorted-key output; re-apply adds nothing); unmatched never mutated
+- [x] hook type is `createRuntime` (not `startContainer`); docs updated (design/injection-lifecycle/geesefs-runc)
+- [x] matched+valid `create` writes the mutated spec (preserving file mode) then `exec runc`
+- [x] table-driven tests: adds-all-fields, idempotency, no-duplicates, malformed/non-object spec → error
+- [x] hook path resolved via `GEESEFS_HOOK_PATH` (set by the wrapper) with PATH fallback
+- [x] ~~Nix check `test-go-ocispec`~~ **covered by `go-test`**
+- [x] review gate: `nix flake check` → all checks passed
 
 ### Phase 4 — Hook + `geesefsd` mount
 - [ ] `hook` reads OCI state JSON on stdin; requests mount over unix socket; blocks until READY/timeout

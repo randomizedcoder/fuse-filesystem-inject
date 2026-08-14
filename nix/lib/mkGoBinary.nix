@@ -73,6 +73,7 @@ pkgs.runCommand "geesefs-inject"
 
     makeWrapper ${raw}/bin/geesefs-inject "$out/bin/geesefs-runc" \
       --argv0 geesefs-runc \
+      --set GEESEFS_HOOK_PATH "$out/bin/geesefs-hook" \
       --prefix PATH : ${runcPath}
 
     makeWrapper ${raw}/bin/geesefs-inject "$out/bin/geesefsd" \

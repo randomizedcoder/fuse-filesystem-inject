@@ -59,7 +59,7 @@ small `runc`-compatible wrapper and delegate to the real `runc`:
                                    |
                                    +-- inspect/modify config.json (policy-driven)
                                    +-- add /dev/fuse + minimal caps
-                                   +-- install a startContainer integration
+                                   +-- install a createRuntime hook integration
 ```
 
 For the long-running GeeSFS process, a **host-side supervisor** (`geesefsd`)
@@ -106,7 +106,7 @@ and all shell logic is `writeShellApplication`.
 3.  Docker invokes geesefs-runc instead of runc.
 4.  geesefs-runc reads the injection policy from OCI annotations.
 5.  Not requested?  -> exec real runc unchanged.
-6.  Requested?      -> add /dev/fuse + caps + mount target + startContainer hook,
+6.  Requested?      -> add /dev/fuse + caps + mount target + createRuntime hook,
                         then exec real runc.
 7.  runc creates the container namespaces.
 8.  Before the app starts, the hook contacts geesefsd.
