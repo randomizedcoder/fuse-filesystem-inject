@@ -32,11 +32,14 @@ safe to register (or even set as `default-runtime`).
 ## Selecting containers (policy)
 
 Injection is policy-driven, never blind. Where launch parameters are controllable,
-Docker labels are the interface; they surface to the OCI runtime as annotations.
+**OCI annotations** are the interface, set with `docker run --annotation
+<key>=<value>`. (Note: Docker's `--label` populates Docker's *own* container
+metadata and does **not** appear in the OCI `config.json` annotations the runtime
+reads, so it will not trigger injection — the wrapper only inspects annotations.)
 Keys (from `nix/constants.nix`):
 
-| Label / annotation | Meaning |
-|--------------------|---------|
+| Annotation | Meaning |
+|------------|---------|
 | `geesefs.enabled=true` | opt this container in |
 | `geesefs.bucket=models` | S3 bucket to mount |
 | `geesefs.mount=/models` | mount path inside the container |

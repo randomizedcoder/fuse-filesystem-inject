@@ -37,6 +37,11 @@ in
   socat = pkgs.socat;
   expect = pkgs.expect;
 
+  # SSH into the demo VM (host-side `.#demo` / `.#vm-ssh` helpers). sshpass
+  # fills the throwaway root password so the demo needs no key setup.
+  openssh = pkgs.openssh;
+  sshpass = pkgs.sshpass;
+
   # Image inspection / S3 exercising.
   skopeo = pkgs.skopeo;
   awscli2 = pkgs.awscli2;

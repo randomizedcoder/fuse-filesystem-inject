@@ -11,12 +11,17 @@ import (
 	"github.com/randomizedcoder/fuse-filesystem-inject/internal/protocol"
 )
 
+// staged is a representative pre-pivot_root rootfs path (the value readlink of
+// /proc/<pid>/cwd returns at createRuntime time); the payload and mount target
+// are resolved relative to it because `nsenter -m` does not chroot.
+const staged = "/var/lib/docker/rootfs/overlayfs/abc123"
+
 func TestGeesefsArgs(t *testing.T) {
 	req := protocol.Request{PID: 4242, Bucket: "models", Mount: "/models", Endpoint: "http://127.0.0.1:9000"}
-	got := geesefsArgs(req)
+	got := geesefsArgs(req, staged)
 	want := []string{
 		"-t", "4242", "-m", "--",
-		contract.PayloadGeesefs, "-f", "--endpoint", "http://127.0.0.1:9000", "models", "/models",
+		staged + contract.PayloadGeesefs, "-f", "--endpoint", "http://127.0.0.1:9000", "models", staged + "/models",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("geesefsArgs:\n got %q\nwant %q", got, want)
@@ -26,14 +31,14 @@ func TestGeesefsArgs(t *testing.T) {
 func TestGeesefsArgsExecsInContainerBinary(t *testing.T) {
 	// Regression guard: geesefsd must exec the static payload bind-mounted into
 	// the container, never a bare "geesefs" resolved from some host PATH.
-	got := geesefsArgs(protocol.Request{PID: 1, Bucket: "b", Mount: "/m", Endpoint: "http://x"})
+	got := geesefsArgs(protocol.Request{PID: 1, Bucket: "b", Mount: "/m", Endpoint: "http://x"}, staged)
 	for _, a := range got {
 		if a == "geesefs" {
 			t.Error("must exec the in-container payload path, not a bare \"geesefs\"")
 		}
 	}
-	if got[4] != contract.PayloadGeesefs {
-		t.Errorf("expected first post-`--` arg to be %q, got %q", contract.PayloadGeesefs, got[4])
+	if want := staged + contract.PayloadGeesefs; got[4] != want {
+		t.Errorf("expected first post-`--` arg to be %q, got %q", want, got[4])
 	}
 }
 
@@ -41,7 +46,7 @@ func TestMountEnv(t *testing.T) {
 	t.Setenv("PATH", "/usr/bin:/bin")
 	t.Setenv("AWS_ACCESS_KEY_ID", "keep-me")
 
-	env := mountEnv()
+	env := mountEnv(staged)
 
 	var pathVals []string
 	var sawCred bool
@@ -53,8 +58,8 @@ func TestMountEnv(t *testing.T) {
 			sawCred = true
 		}
 	}
-	if len(pathVals) != 1 || pathVals[0] != "PATH="+contract.PayloadDir {
-		t.Errorf("PATH entries = %v, want exactly [PATH=%s]", pathVals, contract.PayloadDir)
+	if want := "PATH=" + staged + contract.PayloadDir; len(pathVals) != 1 || pathVals[0] != want {
+		t.Errorf("PATH entries = %v, want exactly [%s]", pathVals, want)
 	}
 	if !sawCred {
 		t.Error("mountEnv must preserve inherited S3 credentials from the environment")
@@ -65,7 +70,7 @@ func TestGeesefsArgsEntersMountNsOnly(t *testing.T) {
 	// Regression guard for the security-relevant invariant: enter the mount
 	// namespace (-m) but NOT the network namespace, so the host S3 endpoint
 	// stays reachable.
-	got := geesefsArgs(protocol.Request{PID: 1, Bucket: "b", Mount: "/m", Endpoint: "http://x"})
+	got := geesefsArgs(protocol.Request{PID: 1, Bucket: "b", Mount: "/m", Endpoint: "http://x"}, staged)
 	var hasM, hasN bool
 	for _, a := range got {
 		switch a {
@@ -86,10 +91,12 @@ func TestGeesefsArgsEntersMountNsOnly(t *testing.T) {
 func TestMountReady(t *testing.T) {
 	// Realistic /proc/<pid>/mountinfo lines. The " - " separator precedes the
 	// filesystem type; the mount point is the 5th space-separated field before it.
-	const geesefsLine = "212 190 0:52 / /models rw,nosuid,nodev,relatime - fuse.geesefs geesefs rw,user_id=0,group_id=0"
-	const tmpfsLine = "190 155 0:51 / /models rw,nosuid,nodev - tmpfs tmpfs rw,mode=755"
-	const otherFuse = "212 190 0:52 / /models rw - fuse.sshfs sshfs rw"
-	const otherMount = "212 190 0:52 / /data rw - fuse.geesefs geesefs rw"
+	// Pre-pivot_root the mount point is the staged rootfs path, not bare /models.
+	target := staged + "/models"
+	geesefsLine := "212 190 0:52 / " + target + " rw,nosuid,nodev,relatime - fuse.geesefs geesefs rw,user_id=0,group_id=0"
+	tmpfsLine := "190 155 0:51 / " + target + " rw,nosuid,nodev - tmpfs tmpfs rw,mode=755"
+	otherFuse := "212 190 0:52 / " + target + " rw - fuse.sshfs sshfs rw"
+	otherMount := "212 190 0:52 / " + staged + "/data rw - fuse.geesefs geesefs rw"
 
 	tests := []struct {
 		name      string
@@ -106,7 +113,7 @@ func TestMountReady(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := mountReady([]byte(tt.mountinfo), "/models"); got != tt.want {
+			if got := mountReady([]byte(tt.mountinfo), target); got != tt.want {
 				t.Errorf("mountReady(%q) = %v, want %v", tt.mountinfo, got, tt.want)
 			}
 		})

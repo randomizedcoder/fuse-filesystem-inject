@@ -19,7 +19,7 @@ This design crosses several sensitive boundaries and should be treated as
 
 ## Untrusted input
 
-Configuration arriving via Docker labels / OCI annotations
+Configuration arriving via OCI annotations
 (`geesefs.bucket`, `geesefs.mount`, `geesefs.endpoint`) is **untrusted**. It must
 be validated before use:
 

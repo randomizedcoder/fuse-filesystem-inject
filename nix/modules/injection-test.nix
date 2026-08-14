@@ -10,7 +10,8 @@
 # What it proves:
 #   1. MinIO + bucket + hello.py + docker + /dev/fuse are ready.
 #   2. An UNMODIFIED upstream PyTorch image, run with --runtime=geesefs and the
-#      geesefs.* labels, gets the S3 bucket mounted at /models before its app.
+#      geesefs.* OCI annotations, gets the S3 bucket mounted at /models before
+#      its app.
 #   3. The mount is a live fuse filesystem (checked via /proc/mounts + df).
 #   4. `python /models/hello.py` runs FROM the S3 mount and prints its sentinel.
 #   5. Isolation: the VM-host marker is unreachable, `../../` from the mount
@@ -132,13 +133,13 @@ in
       # -- Steps 3-5: run with injection and assert inside the container -----
       B64=$(printf '%s' ${lib.escapeShellArg innerScript} | base64 -w0)
 
-      log "running container with --runtime=${constants.runtimeName} + geesefs.* labels"
+      log "running container with --runtime=${constants.runtimeName} + geesefs.* annotations"
       if docker run --rm \
           --runtime=${constants.runtimeName} \
-          --label ${a.enabled}=true \
-          --label ${a.bucket}=${m.bucket} \
-          --label ${a.mount}=${mount} \
-          --label ${a.endpoint}=${m.endpoint} \
+          --annotation ${a.enabled}=true \
+          --annotation ${a.bucket}=${m.bucket} \
+          --annotation ${a.mount}=${mount} \
+          --annotation ${a.endpoint}=${m.endpoint} \
           "${constants.pytorchImage}" \
           bash -lc "echo $B64 | base64 -d | bash" \
           | tee /tmp/geesefs-injection-test/out.log \

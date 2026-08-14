@@ -1,0 +1,56 @@
+#!/usr/bin/env expect
+###############################################################################
+# vm-enter-container.exp — SSH into the demo VM, exec into the always-on
+# PyTorch container, and hand the interactive shell to the user.
+#
+# It runs `docker exec -it <container> bash -l` AS the ssh login command (so no
+# console-prompt matching is needed), watches the first output to give a helpful
+# message if the container is not there, and then `interact`s — the user is
+# dropped straight inside the container, where /models is the live S3 FUSE mount.
+# Ctrl-D leaves the container, ends the ssh session, and returns.
+#
+# Usage: vm-enter-container.exp <port> <password> <container> [host]
+#
+# Sibling of ../tests/scripts/vm-verify-service.exp (same expect idiom).
+###############################################################################
+
+if {$argc < 3} {
+    send_user "Usage: vm-enter-container.exp <port> <password> <container> \[host\]\n"
+    exit 2
+}
+
+set port      [lindex $argv 0]
+set password  [lindex $argv 1]
+set container [lindex $argv 2]
+set host      [expr {$argc > 3 ? [lindex $argv 3] : "127.0.0.1"}]
+
+# -tt forces a remote PTY so `docker exec -it` and the interactive bash work.
+# Host-key checks are disabled because the disposable VM regenerates keys each
+# boot; sshpass fills the throwaway demo password.
+set timeout 30
+send_user "Entering '$container' in the demo VM (Ctrl-D to leave)...\n"
+spawn sshpass -p $password ssh -tt -p $port \
+    -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null \
+    -o LogLevel=ERROR \
+    root@$host "docker exec -it $container bash -l"
+
+expect {
+    -re {No such container|is not running|Cannot connect to the Docker daemon} {
+        send_user "\nERROR: '$container' is not available. Is the demo up?  Run: nix run .#demo\n"
+        exit 1
+    }
+    -re {(Permission denied|Connection refused|Could not resolve)} {
+        send_user "\nERROR: could not reach the VM over ssh. Is it up?  Run: nix run .#demo\n"
+        exit 1
+    }
+    eof {
+        send_user "\nERROR: connection closed before a shell opened. Is the VM up?  Run: nix run .#demo\n"
+        exit 1
+    }
+    # Any other first output (e.g. the container shell prompt) means we are in.
+    -re {.+} {}
+    timeout {}
+}
+
+interact

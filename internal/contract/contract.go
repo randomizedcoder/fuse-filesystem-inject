@@ -15,8 +15,10 @@ const (
 	RoleHook       = "geesefs-hook"
 )
 
-// OCI annotation keys. Docker labels surface to the OCI runtime as annotations
-// under these keys. All values are UNTRUSTED input (see docs/security.md).
+// OCI annotation keys. Containers opt in by setting these as OCI annotations
+// (`docker run --annotation <key>=<value>`); Docker's --label populates Docker's
+// own metadata, not the config.json annotations the runtime sees, so it does not
+// trigger injection. All values are UNTRUSTED input (see docs/security.md).
 const (
 	AnnEnabled  = "geesefs.enabled"
 	AnnBucket   = "geesefs.bucket"

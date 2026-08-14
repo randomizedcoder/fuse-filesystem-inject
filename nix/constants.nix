@@ -19,9 +19,12 @@ rec {
     mem = 4096; # MiB — room for docker + a real container image
     vcpu = 4;
 
-    # Writable data volume mounted at /var/lib (docker + minio state).
+    # Writable data volume mounted at /var/lib (docker + minio state). Must hold
+    # the extracted PyTorch image, which is large (CUDA + cuDNN unpack to ~9 GB),
+    # so give docker's overlayfs generous headroom. The image is a sparse file on
+    # the host, so it only consumes what is actually written.
     dataImage = "fuse-inject-data.img";
-    dataSizeMB = 8192;
+    dataSizeMB = 24576; # 24 GiB
   };
 
   # Console sockets QEMU exposes on the host loopback (NOT guest networking).
@@ -30,6 +33,17 @@ rec {
     device = "ttyS0";
     serialPort = 24700; # boot messages
     virtioPort = 24701; # hvc0, interactive/driver console
+  };
+
+  # SSH access to the demo VM. QEMU user-mode networking forwards
+  # host 127.0.0.1:<hostPort> to the guest sshd on <guestPort> (no host
+  # bridge/TAP needed). The root password is a throwaway convenience for this
+  # loopback-only demo fixture — the same posture as autologin-root and the
+  # insecure test MinIO. Never reuse it or expose the VM beyond loopback.
+  ssh = {
+    hostPort = 2222;
+    guestPort = 22;
+    rootPassword = "demo";
   };
 
   # ==========================================================================
@@ -59,8 +73,10 @@ rec {
   # Docker runtime name the wrapper registers as. `docker run --runtime=geesefs`.
   runtimeName = "geesefs";
 
-  # Docker labels surface to the OCI runtime as annotations. These are the keys
-  # the geesefs-runc wrapper inspects. Treat all values as UNTRUSTED input.
+  # OCI annotation keys the geesefs-runc wrapper inspects. Set them per container
+  # with `docker run --annotation <key>=<value>` (Docker's --label populates
+  # Docker's own metadata, NOT the OCI config.json annotations the runtime sees,
+  # so it does not work here). Treat all values as UNTRUSTED input.
   annotations = {
     enabled = "geesefs.enabled";
     bucket = "geesefs.bucket";
@@ -75,6 +91,14 @@ rec {
   # An UNMODIFIED upstream third-party image — the whole point is that we do
   # not rebuild it. Override for a smaller CPU-only tag when iterating.
   pytorchImage = "pytorch/pytorch:latest";
+
+  # The always-on demo container. `nix run .#demo` boots the VM and this guest
+  # service launches the unmodified PyTorch image DETACHED (sleep infinity) with
+  # the injection annotations, so `/models` (the live S3 FUSE mount) is already up
+  # when a user SSHes in and `docker exec`s into it.
+  demo = {
+    containerName = "pytorch-demo";
+  };
 
   # ==========================================================================
   # Isolation test fixture
@@ -100,5 +124,9 @@ rec {
     serviceReady = 600; # docker pull of a large image can be slow
     command = 15;
     shutdown = 45;
+    # `.#demo` waits this long for the always-on container. On a first boot this
+    # covers the injection-test's full PyTorch pull+extract AND the demo
+    # container start (both serialized); later boots reuse the cached image.
+    demoReady = 1500;
   };
 }

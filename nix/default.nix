@@ -110,6 +110,14 @@ in
       type = "app";
       program = "${scripts.vmConsole}/bin/vm-console";
     };
+    vm-ssh = {
+      type = "app";
+      program = "${scripts.vmSsh}/bin/vm-ssh";
+    };
+    vm-enter = {
+      type = "app";
+      program = "${scripts.vmEnter}/bin/vm-enter";
+    };
     demo = {
       type = "app";
       program = "${scripts.demo}/bin/demo";

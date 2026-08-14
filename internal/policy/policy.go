@@ -1,7 +1,7 @@
 // Package policy turns OCI annotations into a validated, typed Policy value.
 //
 // Every annotation value is UNTRUSTED input (see docs/security.md): it arrives
-// from Docker labels the container author controls. Parse therefore validates
+// from OCI annotations the container author controls. Parse therefore validates
 // each field and rejects anything malformed or unsafe — a mount path that could
 // escape the container rootfs, a bucket name with illegal characters, or an
 // endpoint with an unexpected scheme. An opted-in container whose policy fails

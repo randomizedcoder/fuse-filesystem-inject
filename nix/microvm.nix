@@ -28,6 +28,7 @@ let
   minioModule = import ./modules/minio.nix { inherit constants versions helloScript; };
   injectionModule = import ./modules/injection.nix { inherit constants geesefsd; };
   injectionTestModule = import ./modules/injection-test.nix { inherit constants versions; };
+  demoContainerModule = import ./modules/demo-container.nix { inherit constants versions; };
 in
 (nixpkgs.lib.nixosSystem {
   modules = [
@@ -41,6 +42,7 @@ in
     minioModule
     injectionModule
     injectionTestModule
+    demoContainerModule
 
     # ------------------------------------------------------------------
     # Base guest configuration
@@ -93,6 +95,19 @@ in
             }
           ];
 
+          # Forward host 127.0.0.1:<hostPort> -> guest sshd, so `nix run .#demo`
+          # users can `ssh -p <hostPort> root@localhost` with no host bridge/TAP
+          # setup (SLiRP hostfwd on the user-mode netdev above).
+          forwardPorts = [
+            {
+              from = "host";
+              proto = "tcp";
+              host.address = "127.0.0.1";
+              host.port = constants.ssh.hostPort;
+              guest.port = constants.ssh.guestPort;
+            }
+          ];
+
           qemu = {
             serialConsole = false;
             extraArgs = [
@@ -135,6 +150,19 @@ in
         # for the expect-driven integration test.
         services.getty.autologinUser = "root";
         systemd.enableEmergencyMode = false;
+
+        # SSH for the demo (see forwardPorts above). Root login with a
+        # well-known throwaway password — acceptable ONLY because this VM is a
+        # loopback-only, disposable demo fixture (same posture as autologin-root
+        # and the insecure test MinIO). Never expose this VM beyond loopback.
+        services.openssh = {
+          enable = true;
+          settings = {
+            PermitRootLogin = "yes";
+            PasswordAuthentication = true;
+          };
+        };
+        users.users.root.password = constants.ssh.rootPassword;
 
         # A marker that lives ONLY on the VM host rootfs. The integration test
         # asserts it is unreachable from inside the container.

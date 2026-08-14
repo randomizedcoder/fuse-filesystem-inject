@@ -228,20 +228,43 @@ type mounter interface {
 type realMounter struct{}
 
 func (realMounter) Mount(req protocol.Request) (*os.Process, error) {
-	cmd := exec.Command("nsenter", geesefsArgs(req)...)
-	cmd.Env = mountEnv()
+	root, err := containerRoot(req.PID)
+	if err != nil {
+		return nil, err
+	}
+
+	cmd := exec.Command("nsenter", geesefsArgs(req, root)...)
+	cmd.Env = mountEnv(root)
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("starting geesefs: %w", err)
 	}
 
-	if err := waitForMount(req); err != nil {
+	if err := waitForMount(req, root); err != nil {
 		// Mount never came up: don't leak the GeeSFS process.
 		stopProcess(cmd.Process, stopTimeout)
 		return nil, err
 	}
 	return cmd.Process, nil
+}
+
+// containerRoot returns the target container's assembled root filesystem as seen
+// from the host. We are called from the OCI createRuntime hook, which runs AFTER
+// runc has staged the rootfs and created the namespaces but BEFORE it pivot_roots
+// into it. At that instant the container-init's own root (/proc/<pid>/root) is
+// still the host's "/", while its cwd (/proc/<pid>/cwd) is the staged rootfs
+// (e.g. /var/lib/docker/rootfs/overlayfs/<id>). Since `nsenter -m` enters the
+// mount namespace but does NOT chroot, absolute in-container paths like /models
+// or /.geesefs/bin/geesefs do not resolve — they must be prefixed with this
+// staging path. After the hook returns, runc pivot_roots the staging dir to "/",
+// so a mount we create at <root>/models correctly becomes the container's /models.
+func containerRoot(pid int) (string, error) {
+	root, err := os.Readlink(fmt.Sprintf("/proc/%d/cwd", pid))
+	if err != nil {
+		return "", fmt.Errorf("resolving container rootfs via /proc/%d/cwd: %w", pid, err)
+	}
+	return root, nil
 }
 
 // Unmount reaps the container's GeeSFS process. A clean SIGTERM lets GeeSFS
@@ -281,16 +304,17 @@ func stopProcess(proc *os.Process, timeout time.Duration) {
 // /proc/<pid>/mountinfo from the host — which reflects that pid's (the
 // container's) mount namespace — so it needs no helper binary inside the
 // container.
-func waitForMount(req protocol.Request) error {
+func waitForMount(req protocol.Request, root string) error {
 	mountinfoPath := fmt.Sprintf("/proc/%d/mountinfo", req.PID)
+	target := root + req.Mount
 	deadline := time.Now().Add(mountTimeout)
 	for {
 		data, _ := os.ReadFile(mountinfoPath)
-		if mountReady(data, req.Mount) {
+		if mountReady(data, target) {
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("mount at %s not ready after %s", req.Mount, mountTimeout)
+			return fmt.Errorf("mount at %s not ready after %s", target, mountTimeout)
 		}
 		time.Sleep(pollInterval)
 	}
@@ -303,18 +327,25 @@ func waitForMount(req protocol.Request) error {
 // host's so the S3 endpoint stays reachable. It execs the static geesefs
 // bind-mounted into the container (contract.PayloadGeesefs), never a host copy.
 // GeeSFS runs in the foreground (-f) so geesefsd owns its lifetime.
-func geesefsArgs(req protocol.Request) []string {
+//
+// Because -m does not chroot and the hook fires pre-pivot_root, both the payload
+// path and the mount target are prefixed with root (the staged rootfs; see
+// containerRoot) so they resolve against the host's view of the container's
+// not-yet-pivoted filesystem.
+func geesefsArgs(req protocol.Request, root string) []string {
 	return []string{
 		"-t", strconv.Itoa(req.PID), "-m", "--",
-		contract.PayloadGeesefs, "-f", "--endpoint", req.Endpoint, req.Bucket, req.Mount,
+		root + contract.PayloadGeesefs, "-f", "--endpoint", req.Endpoint, req.Bucket, root + req.Mount,
 	}
 }
 
 // mountEnv is the environment GeeSFS runs with. It inherits geesefsd's
 // environment (notably the AWS_* S3 credentials from the systemd unit — they
 // never touch argv) but forces PATH to the in-container payload directory so
-// GeeSFS execs the bind-mounted static fusermount3, not any host copy.
-func mountEnv() []string {
+// GeeSFS execs the bind-mounted static fusermount3, not any host copy. The
+// payload dir is prefixed with root for the same pre-pivot_root reason as
+// geesefsArgs.
+func mountEnv(root string) []string {
 	env := os.Environ()
 	out := make([]string, 0, len(env)+1)
 	for _, kv := range env {
@@ -322,7 +353,7 @@ func mountEnv() []string {
 			out = append(out, kv)
 		}
 	}
-	return append(out, "PATH="+contract.PayloadDir)
+	return append(out, "PATH="+root+contract.PayloadDir)
 }
 
 // mountReady reports whether the container's mountinfo shows a live GeeSFS FUSE

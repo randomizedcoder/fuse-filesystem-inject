@@ -36,15 +36,35 @@ Docker inside a microVM — is a known requirement to validate; see
 | `nix/microvm.nix` | The `nixosSystem` → `declaredRunner`; QEMU/console/9p/volume/network config. |
 | `nix/modules/docker.nix` | Enables Docker; registers `geesefs-runc` as the `geesefs` runtime. |
 | `nix/constants.nix` | Single source of truth: VM resources, console ports, etc. |
-| `nix/scripts.nix` | `vm-start`, `vm-stop`, `vm-console`, `demo` host apps. |
+| `nix/scripts.nix` | `demo`, `vm-enter`, `vm-ssh`, `vm-start`, `vm-stop`, `vm-console` host apps. |
+| `nix/scripts/vm-enter-container.exp` | expect script behind `vm-enter` (ssh → docker exec → `interact`). |
 
 ## Running it
 
 ```sh
+nix run .#demo          # boot + start the injected PyTorch container, then print how to look inside
+nix run .#vm-enter      # ssh in + docker exec into the container, then hand over the shell (expect-driven)
+nix run .#vm-ssh        # ssh in (append args, e.g. `-- docker exec -it pytorch-demo bash`)
 nix run .#vm-start      # build + boot in the background
 nix run .#vm-console    # attach to hvc0 (Ctrl+C to detach)
 nix run .#vm-stop       # SIGTERM/SIGKILL by QEMU process name
 ```
+
+`vm-enter` reuses the same `expect` mechanism as the integration test's console
+driver (`nix/tests/scripts/vm-verify-service.exp`): it spawns `ssh`, runs
+`docker exec -it <container> bash -l` as the login command, then `interact`s so
+the user lands inside the container (at `/models`) and Ctrl-D returns to the host.
+
+### SSH access
+
+The VM enables `sshd` and QEMU forwards host `127.0.0.1:2222` to the guest
+(SLiRP `hostfwd` on the user-mode netdev — no host bridge/TAP), so any machine
+that can run the flake can `ssh -p 2222 root@localhost` (password: `demo`). This
+is a **loopback-only, disposable demo convenience** — the same posture as
+autologin-root and the insecure test MinIO. The root password and host-key
+checks are deliberately relaxed for `.#demo`/`.#vm-ssh`; never reuse the password
+or expose the VM beyond loopback. The port and password live in
+`nix/constants.nix` (`ssh = { hostPort; guestPort; rootPassword; }`).
 
 Docker is registered with an extra runtime named `geesefs`
 (`virtualisation.docker.daemon.settings.runtimes`). Containers opt in with

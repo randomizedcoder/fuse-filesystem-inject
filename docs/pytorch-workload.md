@@ -12,17 +12,37 @@ proving nothing about third-party workloads.
 ```sh
 docker run --rm \
   --runtime=geesefs \
-  --label geesefs.enabled=true \
-  --label geesefs.bucket=models \
-  --label geesefs.mount=/models \
-  --label geesefs.endpoint=http://127.0.0.1:9000 \
+  --annotation geesefs.enabled=true \
+  --annotation geesefs.bucket=models \
+  --annotation geesefs.mount=/models \
+  --annotation geesefs.endpoint=http://127.0.0.1:9000 \
   pytorch/pytorch:latest \
   bash -lc 'python /models/hello.py'
 ```
 
-`nix run .#demo` prints this recipe. Nothing about the image, its `ENTRYPOINT`, or
-its Python environment is changed — the only additions are the `--runtime` and the
-`geesefs.*` labels, which the [wrapper](./geesefs-runc.md) reads as policy.
+Nothing about the image, its `ENTRYPOINT`, or its Python environment is changed —
+the only additions are the `--runtime` and the `geesefs.*` **OCI annotations**,
+which the [wrapper](./geesefs-runc.md) reads as policy. (Use `--annotation`, not
+`--label`: Docker's `--label` populates Docker's own metadata and never reaches
+the OCI `config.json` annotations the runtime inspects.)
+
+### The always-on demo container
+
+`nix run .#demo` boots the VM and the `pytorch-demo` guest service
+(`nix/modules/demo-container.nix`) launches this same image **detached** with
+`sleep infinity` instead of `--rm ... hello.py`, so the container stays up with
+`/models` mounted. A user can then SSH in (see
+[microvm-host.md](./microvm-host.md)) and explore the live mount:
+
+```sh
+docker exec -it pytorch-demo bash
+ls -la /models              # files served from S3 over FUSE
+python /models/hello.py     # runs FROM the S3 mount
+```
+
+The detached container carries **no credentials** — exactly as in the automated
+test, `geesefsd` (whose systemd environment holds the S3 creds) performs the
+mount, so the image and its annotations never see them.
 
 ## What the application sees
 

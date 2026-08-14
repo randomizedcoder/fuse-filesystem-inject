@@ -31,11 +31,26 @@ Start with the overview, then the per-component docs:
 ```sh
 nix develop                  # dev shell (docker/minio-client/skopeo/jq/...)
 nix build .#microvm          # build the microVM runner
-nix run   .#vm-start         # boot the VM
-nix run   .#vm-console       # attach to its console
+nix run   .#demo             # boot the VM + start the injected PyTorch container, then print how to look inside
 nix run   .#integration-test # boot VM + prove injection end-to-end
 nix flake check              # nixfmt --check + evaluation smoke
 ```
+
+`nix run .#demo` is the easiest way to see it work: it boots the VM and waits for an
+**unmodified** `pytorch/pytorch` container (started with the S3 bucket transparently
+mounted at `/models`). Then drop straight inside it:
+
+```sh
+nix run .#vm-enter                  # ssh + docker exec into the container, hands you the shell
+# inside the container:
+ls -la /models                      # files served from S3 over FUSE
+python /models/hello.py             # runs FROM the S3 mount
+```
+
+Or SSH in yourself: `ssh -p 2222 root@localhost` (password: `demo`, or `nix run .#vm-ssh`),
+then `docker exec -it pytorch-demo bash`. Lower-level VM controls:
+`nix run .#vm-start` / `.#vm-console` / `.#vm-stop`. SSH here is a loopback-only
+throwaway convenience (see [docs/microvm-host.md](./docs/microvm-host.md)).
 
 ## Status
 
@@ -72,8 +87,9 @@ nix/
   lib/mkGoBinary.nix builds geesefs-inject + installs the per-role wrappers
   microvm.nix        the NixOS microVM (-> declaredRunner)
   devshell.nix       dev shell
-  scripts.nix        vm-start / vm-stop / vm-console / demo apps
-  modules/           docker, minio (+ hello.py seed), injection, injection-test
+  scripts.nix        demo / vm-enter / vm-ssh / vm-start / vm-stop / vm-console apps
+  scripts/           expect asset for vm-enter (ssh + docker exec into the container)
+  modules/           docker, minio (+ hello.py seed), injection, injection-test, demo-container
   tests/             integration-test host driver + expect script
 assets/hello.py      PyTorch hello-world seeded into MinIO, run from the FUSE mount
 docs/                the design suite + implementation plan/status
