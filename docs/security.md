@@ -43,12 +43,19 @@ asserts this concretely:
 
 ## Credentials
 
-S3 credentials should not live in the application image or the GeeSFS payload.
-The host-side supervisor is the natural place to fetch them (workload identity,
-host secret store, short-lived STS, Docker secrets) and hand them to GeeSFS
-directly — keeping them out of arbitrary application filesystems. See
-[geesefsd-supervisor.md](./geesefsd-supervisor.md). (In this experiment the MinIO
-credentials are static test fixtures.)
+S3 credentials must not live in the application image, the GeeSFS payload, the
+OCI `config.json`, the annotations, or any command line. The host-side supervisor
+is the natural place to resolve them (workload identity, host secret store,
+short-lived STS, Docker secrets) and hand them to GeeSFS by **environment
+inheritance** — argv is avoided because `/proc/<pid>/cmdline` is world-readable,
+whereas a root process's `environ` is not. In this experiment the MinIO
+credentials are a single static test fixture set in the geesefsd systemd unit;
+the [supervisor doc](./geesefsd-supervisor.md#s3-credentials) covers both the
+current flow and how per-container credential injection would look (a validated,
+allowlisted *reference* in an annotation resolving to a host-side secret — never
+the secret itself). Because untrusted annotations can never carry a secret, only
+a reference, an attacker who controls a container's annotations cannot exfiltrate
+or forge another tenant's credentials.
 
 ## Cross-container isolation
 
